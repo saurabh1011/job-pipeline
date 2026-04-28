@@ -30,6 +30,9 @@ OUTPUT_DIR = os.environ.get("OUTPUT_DIR",   str(ROOT / "output"))
 CONFIG_DIR = os.environ.get("CONFIG_DIR",   str(ROOT / "config"))
 PROFILE_DIR = os.environ.get("PROFILE_DIR", str(ROOT / "profile"))
 
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(PROFILE_DIR, exist_ok=True)
+
 app = FastAPI(title="Job Application Pipeline", version="1.0.0")
 
 
