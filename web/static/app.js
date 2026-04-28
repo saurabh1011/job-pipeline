@@ -493,13 +493,11 @@ const App = (() => {
 
   async function triggerRun() {
     const sel = document.getElementById("company-run-select");
-    const selected = Array.from(sel.selectedOptions).map(o => o.value);
-    const isAll = selected.length === 0 || (selected.length === 1 && selected[0] === "");
-    const label = isAll
-      ? "All companies"
-      : selected.length === 1 ? selected[0] : `${selected.length} companies`;
+    const value = sel.value;
+    const isAll = !value;
+    const label = isAll ? "All companies" : value;
     if (!confirm(`Run fetch + score for: ${label}? This may take several minutes.`)) return;
-    const body = isAll ? {} : { companies: selected };
+    const body = isAll ? {} : { companies: [value] };
     const data = await _api("POST", "/api/pipeline/run", body);
     _startTask(data.task_id, `Running: ${label}...`, loadJobs);
   }
