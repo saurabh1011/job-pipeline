@@ -25,10 +25,10 @@ from web.auth import require_api_key           # noqa: E402
 from web.tasks import create_task, get_task    # noqa: E402
 from pipeline.store import JobStore, JobStatus  # noqa: E402
 
-DB_PATH = str(ROOT / "jobs.db")
-OUTPUT_DIR = str(ROOT / "output")
-CONFIG_DIR = str(ROOT / "config")
-PROFILE_DIR = str(ROOT / "profile")
+DB_PATH    = os.environ.get("DB_PATH",      str(ROOT / "jobs.db"))
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR",   str(ROOT / "output"))
+CONFIG_DIR = os.environ.get("CONFIG_DIR",   str(ROOT / "config"))
+PROFILE_DIR = os.environ.get("PROFILE_DIR", str(ROOT / "profile"))
 
 app = FastAPI(title="Job Application Pipeline", version="1.0.0")
 

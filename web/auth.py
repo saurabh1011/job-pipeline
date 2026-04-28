@@ -1,9 +1,12 @@
 """API key authentication dependency for FastAPI routes."""
 import os
 from fastapi import Header, HTTPException, status
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not available in production — env vars injected directly
 
 _API_KEY = os.getenv("WEB_API_KEY", "")
 
