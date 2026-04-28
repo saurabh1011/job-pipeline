@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job Pipeline</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- Auth overlay (shown when no key in localStorage) -->
+  <div id="auth-overlay" style="display:none">
+    <div class="auth-box">
+      <h2>API Key</h2>
+      <input id="api-key-input" type="password" placeholder="Enter WEB_API_KEY" autofocus>
+      <button class="btn-primary" style="width:100%" onclick="App.submitApiKey()">Continue</button>
+      <p id="auth-error" style="color:#e05c5c;font-size:12px;margin-top:8px;display:none">Invalid key</p>
+    </div>
+  </div>
+
+  <!-- Header -->
+  <header>
+    <h1>Job Pipeline</h1>
+    <div class="header-actions">
+      <button class="btn-ghost" onclick="App.triggerProcess()">Process Jobs</button>
+      <div class="run-company-group">
+        <select id="company-run-select" multiple size="1" title="Select companies (ctrl/cmd+click for multiple)"></select>
+        <button class="btn-warn" onclick="App.triggerRun()">Run</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Job list -->
+    <div id="list-pane">
+      <!-- Filters -->
+      <div class="filter-row">
+        <div id="dd-status"></div>
+        <div id="dd-company"></div>
+        <div id="dd-location"></div>
+        <select id="date-filter" onchange="App.setDateFilter(this.value)">
+          <option value="all">Any time</option>
+          <option value="7">Last 7 days</option>
+          <option value="14">Last 14 days</option>
+          <option value="30">Last 30 days</option>
+        </select>
+        <button id="select-btn" class="btn-ghost btn-sm" onclick="App.toggleSelectMode()">Select</button>
+      </div>
+
+      <div id="job-count" class="job-count"></div>
+      <div id="job-list"></div>
+
+      <!-- Bulk action bar (visible when items selected) -->
+      <div id="bulk-bar">
+        <span id="bulk-count">0 selected</span>
+        <div class="bulk-actions">
+          <select id="bulk-status-select" class="status-select">
+            <option value="">Move to…</option>
+            <option value="approved">Approved</option>
+            <option value="applied">Applied</option>
+            <option value="interviewing">Interviewing</option>
+            <option value="offer">Offer</option>
+            <option value="rejected">Rejected</option>
+            <option value="skipped">Skipped</option>
+            <option value="interesting">Interesting</option>
+            <option value="alerted">Alerted</option>
+            <option value="new">New</option>
+          </select>
+          <button class="btn-primary btn-sm" onclick="App.bulkStatusFromSelect()">Apply</button>
+          <button class="btn-ghost btn-sm"   onclick="App.clearSelection()">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Job detail -->
+    <div id="detail-pane">
+      <div class="detail-header">
+        <button class="back-btn" onclick="App.closeDetail()">&#8592;</button>
+        <div class="detail-title-block">
+          <div id="detail-title" class="detail-title"></div>
+          <div id="detail-sub" class="detail-sub"></div>
+        </div>
+        <div id="detail-score" class="score-large"></div>
+      </div>
+      <div class="detail-body">
+        <div class="action-bar" id="action-bar"></div>
+        <div class="detail-tabs">
+          <button id="tab-desc-btn" class="detail-tab active" onclick="App.showTab(this,'tab-desc')">Description</button>
+          <button class="detail-tab" onclick="App.showTab(this,'tab-cover')">Cover Letter</button>
+          <button class="detail-tab" onclick="App.showTab(this,'tab-diff')">Resume Diff</button>
+        </div>
+        <div id="tab-desc" class="detail-tab-content active">
+          <div id="match-analysis"></div>
+          <div id="desc-content"></div>
+        </div>
+        <div id="tab-cover" class="detail-tab-content">
+          <div id="cover-letter-content"></div>
+        </div>
+        <div id="tab-diff" class="detail-tab-content">
+          <div id="diff-content"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+</div>
+
+<!-- Task progress drawer -->
+<div id="task-drawer">
+  <div class="drawer-header">
+    <span id="task-drawer-title">Running...</span>
+    <button class="drawer-close" onclick="App.closeDrawer()">&#x2715;</button>
+  </div>
+  <div id="task-log"></div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

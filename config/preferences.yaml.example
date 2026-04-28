@@ -1,0 +1,127 @@
+# Job search preferences
+
+# Minimum match score (1-10) to trigger alert and generate materials
+match_threshold: 8
+
+# Location preferences
+# Jobs matching preferred_locations get full score
+# Jobs matching acceptable_locations are ranked lower (score penalty applied)
+# Jobs matching neither are excluded unless remote
+preferred_locations:
+  - "New York"
+  - "New York, NY"
+  - "NYC"
+  - "Remote"
+
+acceptable_locations:
+  - "San Francisco"
+  - "San Francisco, CA"
+  - "Seattle"
+  - "Seattle, WA"
+  - "Austin"
+  - "Austin, TX"
+  - "Chicago"
+  - "Chicago, IL"
+
+# Locations to exclude entirely — jobs whose location contains any of these
+# keywords are dropped before scoring, even if they are listed as "Remote".
+# Use this to exclude remote-but-Canada or other unwanted remote geographies.
+# Only show US-based jobs (filters out postings with non-US country codes)
+us_only: true
+
+excluded_location_keywords:
+  - "Canada"
+  - "Toronto"
+  - "Vancouver"
+  - "Montreal"
+  - "Ottawa"
+  - "Calgary"
+  - "India"
+  - "Bangalore"
+  - "Bengaluru"
+  - "Hyderabad"
+  - "Mumbai"
+  - "Chennai"
+  - "Pune"
+  - "Delhi"
+  - "Gurgaon"
+  - "Gurugram"
+  - "Noida"
+
+# Location score penalties (subtracted from match score)
+location_penalties:
+  preferred: 0
+  acceptable: 1
+  other: 3  # jobs not in preferred or acceptable are penalized heavily
+
+# Title keywords to include (case-insensitive OR match)
+title_keywords:
+  - "Engineering Manager"
+  - "Senior Engineering Manager"
+  - "Director of Engineering"
+  - "Engineering Director"
+  - "Staff Engineering Manager"
+  - "Principal Engineering Manager"
+  - "Group Engineering Manager"
+  - "VP of Engineering"
+  - "Software Development Manager"
+  - "Senior Software Development Manager"
+
+# Title keywords to exclude (filters out non-management roles)
+title_exclude_keywords:
+  - "Software Engineer"
+  - "Staff Engineer"
+  - "Principal Engineer"
+  - "Data Engineer"
+  - "ML Engineer"
+  - "Product Manager"
+  - "Program Manager"
+  - "Technical Program Manager"
+  - "Maintenance"
+  - "Mechanical"
+  - "Hardware"
+  - "Firmware"
+  - "RME"
+  - "Spacecraft"
+  - "Satellite"
+  - "Construction"
+  - "Facilities"
+  - "Graduate Engineering"
+  - "Data Center"
+  - "Data Centre"
+  - "Safety Design"
+
+# Google Docs URLs containing experience/background details
+# These are fetched and used to augment the profile for matching and generation
+# Add your Google Docs links here
+google_docs_links: []
+  # Example:
+  # - url: https://docs.google.com/document/d/YOUR_DOC_ID/edit
+  #   description: "Leadership philosophy and team accomplishments"
+  # - url: https://docs.google.com/document/d/YOUR_DOC_ID/edit
+  #   description: "Project highlights and impact metrics"
+
+# ── LLM Provider ─────────────────────────────────────────────────────────────
+# Which LLM to use for matching, generation, and story processing.
+# Options: gemini (default, free tier) | anthropic | openai | ollama (local)
+llm_provider: ollama
+
+# API keys — leave blank to use environment variables instead:
+#   gemini:    export GEMINI_API_KEY=...   (get free key at aistudio.google.com)
+#   anthropic: export ANTHROPIC_API_KEY=...
+#   openai:    export OPENAI_API_KEY=...
+# (ollama does not require an API key)
+api_keys:
+  gemini: "YOUR_GEMINI_API_KEY_HERE"
+  anthropic: ""
+  openai: ""
+
+# ── Ollama settings (only used when llm_provider: ollama) ────────────────────
+# Install Ollama: https://ollama.com  then run: ollama pull gemma3:12b
+ollama_base_url: "http://localhost:11434/v1"
+ollama_quality_model: "gemma4:e4b"
+ollama_fast_model: "gemma4:e4b"
+ollama_num_ctx: 8192
+
+# How many times per day to run the pipeline (scheduler uses this)
+runs_per_day: 1

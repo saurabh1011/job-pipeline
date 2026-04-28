@@ -1,0 +1,128 @@
+# Company configurations for job fetching
+# ats: greenhouse | ashby | netflix | zillow | amazon | google | apple | meta | microsoft | uber | walmart | linkedin
+
+companies:
+
+  # ── Playwright-based (React/SPA sites) ─────────────────────────────────────
+  - name: Google
+    ats: google
+
+  - name: Apple
+    ats: apple
+
+  - name: Meta
+    ats: meta
+
+  - name: Microsoft
+    ats: microsoft
+
+  - name: Uber
+    ats: uber
+
+  - name: Walmart
+    ats: walmart
+
+  # ── Greenhouse ──────────────────────────────────────────────────────────────
+  - name: DoorDash
+    ats: greenhouse
+    board_slug: doordashusa
+
+  - name: Dropbox
+    ats: greenhouse
+    board_slug: dropbox
+
+  - name: AirBnB
+    ats: greenhouse
+    board_slug: airbnb
+
+  - name: Stripe
+    ats: greenhouse
+    board_slug: stripe
+
+  - name: Anthropic
+    ats: greenhouse
+    board_slug: anthropic
+
+  - name: ScaleAI
+    ats: greenhouse
+    board_slug: scaleai
+
+  - name: Duolingo
+    ats: greenhouse
+    board_slug: duolingo
+
+  - name: Lyft
+    ats: greenhouse
+    board_slug: lyft
+
+  - name: StubHub
+    ats: greenhouse
+    board_slug: stubhubinc
+
+  - name: Spotify
+    ats: lever
+    board_slug: spotify
+
+  - name: Instacart
+    ats: greenhouse
+    board_slug: instacart
+
+  - name: Figma
+    ats: greenhouse
+    board_slug: figma
+
+  - name: Databricks
+    ats: greenhouse
+    board_slug: databricks
+
+  - name: Pinterest
+    ats: greenhouse
+    board_slug: pinterest
+
+  - name: MongoDB
+    ats: greenhouse
+    board_slug: mongodb
+
+  - name: Twilio
+    ats: greenhouse
+    board_slug: twilio
+
+  - name: Roblox
+    ats: greenhouse
+    board_slug: roblox
+
+  - name: HubSpot
+    ats: greenhouse
+    board_slug: hubspot
+
+  # ── Ashby ───────────────────────────────────────────────────────────────────
+  - name: OpenAI
+    ats: ashby
+    board_slug: openai
+
+  - name: Cohere
+    ats: ashby
+    board_slug: cohere
+
+  - name: Ramp
+    ats: ashby
+    board_slug: ramp
+
+  - name: Notion
+    ats: ashby
+    board_slug: notion
+
+  # ── Custom APIs ─────────────────────────────────────────────────────────────
+  - name: Netflix
+    ats: netflix
+
+  - name: Zillow
+    ats: zillow
+
+  - name: Amazon
+    ats: amazon
+
+  # ── LinkedIn (jobs at LinkedIn Inc. only) ───────────────────────────────────
+  - name: LinkedIn
+    ats: linkedin
+    company_id: "1337"

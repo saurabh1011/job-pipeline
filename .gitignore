@@ -1,0 +1,32 @@
+# Personal profile data — never commit (deploy to Fly.io volume separately)
+profile/
+
+# Database (lives on Fly.io persistent volume in prod, local only in dev)
+jobs.db
+jobs.db-shm
+jobs.db-wal
+
+# Pipeline state
+pipeline_checkpoint.json
+
+# Generated output (cover letters, PDFs)
+output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Secrets (never commit)
+.env
+*.key
+config/preferences.yaml
+
+# macOS
+.DS_Store
