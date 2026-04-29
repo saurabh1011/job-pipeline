@@ -10,7 +10,7 @@ primary_region = 'ewr'
   dockerfile = 'Dockerfile'
 
 [env]
-  CONFIG_DIR = '/app/config'
+  CONFIG_DIR = '/data/config'
   DB_PATH = '/data/jobs.db'
   OUTPUT_DIR = '/data/output'
   PROFILE_DIR = '/data/profile'
