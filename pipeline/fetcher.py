@@ -29,13 +29,17 @@ def _strip_html(html: str) -> str:
 
 
 def _matches_title(title: str, preferences: dict) -> bool:
-    """Return True if title matches any include keyword and no exclude keyword."""
+    """Return True if title matches any include keyword and no exclude keyword.
+
+    Exclude keywords use word-boundary matching so that e.g. "Software Engineer"
+    does not incorrectly exclude "Software Engineering Manager".
+    """
     title_lower = title.lower()
     include_kws = [kw.lower() for kw in preferences.get("title_keywords", [])]
     exclude_kws = [kw.lower() for kw in preferences.get("title_exclude_keywords", [])]
 
     has_include = any(kw in title_lower for kw in include_kws)
-    has_exclude = any(kw in title_lower for kw in exclude_kws)
+    has_exclude = any(re.search(r'\b' + re.escape(kw) + r'\b', title_lower) for kw in exclude_kws)
     return has_include and not has_exclude
 
 
