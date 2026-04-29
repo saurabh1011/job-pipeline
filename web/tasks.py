@@ -6,13 +6,60 @@ Each task has:
   logs     - list of strings emitted during the run
   result   - dict with outcome data (set on completion)
 """
+import os
 import threading
+import time
 import traceback
 import uuid
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Optional
+
+import requests
 
 _tasks: Dict[str, dict] = {}
 _lock = threading.Lock()
+
+_KEEPALIVE_INTERVAL = 120  # seconds between pings
+_KEEPALIVE_URL = (
+    f"https://{os.getenv('FLY_APP_NAME')}.fly.dev/"
+    if os.getenv("FLY_APP_NAME")
+    else None
+)
+
+# Count of active tasks so we share one keepalive thread across concurrent tasks
+_active_tasks = 0
+_active_lock = threading.Lock()
+_keepalive_thread: Optional[threading.Thread] = None
+
+
+def _keepalive_loop():
+    """Ping the app's own external URL every 2 minutes while tasks are running."""
+    while True:
+        time.sleep(_KEEPALIVE_INTERVAL)
+        with _active_lock:
+            if _active_tasks == 0:
+                return
+        try:
+            requests.get(_KEEPALIVE_URL, timeout=10)
+        except Exception:
+            pass
+
+
+def _start_keepalive():
+    global _keepalive_thread
+    if not _KEEPALIVE_URL:
+        return
+    with _active_lock:
+        global _active_tasks
+        _active_tasks += 1
+        if _keepalive_thread is None or not _keepalive_thread.is_alive():
+            _keepalive_thread = threading.Thread(target=_keepalive_loop, daemon=True)
+            _keepalive_thread.start()
+
+
+def _stop_keepalive():
+    with _active_lock:
+        global _active_tasks
+        _active_tasks = max(0, _active_tasks - 1)
 
 
 def _make_id() -> str:
@@ -36,6 +83,7 @@ def create_task(fn: Callable, *args, **kwargs) -> str:
             _tasks[task_id]["logs"].append(msg)
 
     def _run():
+        _start_keepalive()
         with _lock:
             _tasks[task_id]["status"] = "running"
         try:
@@ -48,6 +96,8 @@ def create_task(fn: Callable, *args, **kwargs) -> str:
                 _tasks[task_id]["status"] = "error"
                 _tasks[task_id]["logs"].append(f"ERROR: {e}")
                 _tasks[task_id]["logs"].append(traceback.format_exc())
+        finally:
+            _stop_keepalive()
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
