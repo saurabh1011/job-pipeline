@@ -513,15 +513,25 @@ const App = (() => {
 
   // ── Task progress drawer ──────────────────────────────────────────────────
 
+  function _elapsed(startedAt) {
+    if (!startedAt) return "";
+    const secs = Math.floor((Date.now() - new Date(startedAt)) / 1000);
+    const m = Math.floor(secs / 60), s = secs % 60;
+    return m > 0 ? `${m}m ${s}s` : `${s}s`;
+  }
+
   function _startTask(taskId, label, onDone) {
     clearInterval(_pollTimer);
     const drawer = document.getElementById("task-drawer");
     const logEl = document.getElementById("task-log");
-    document.getElementById("task-drawer-title").innerHTML = `<span class="spinner"></span> ${label}`;
+    const titleEl = document.getElementById("task-drawer-title");
+    titleEl.innerHTML = `<span class="spinner"></span> ${label}`;
     logEl.innerHTML = "";
     drawer.classList.add("open");
 
     let lastLogLen = 0;
+    let startedAt = null;
+
     _pollTimer = setInterval(async () => {
       let task;
       try {
@@ -529,26 +539,38 @@ const App = (() => {
       } catch {
         return;
       }
+      if (task.started_at) startedAt = task.started_at;
+
       const newLines = task.logs.slice(lastLogLen);
       lastLogLen = task.logs.length;
       newLines.forEach(line => {
         const div = document.createElement("div");
-        div.className = line.startsWith("ERROR") ? "log-error" : "";
+        div.className = line.includes("ERROR") ? "log-error" : "";
         div.textContent = line;
         logEl.appendChild(div);
         logEl.scrollTop = logEl.scrollHeight;
       });
+
+      if (task.status === "running" && startedAt) {
+        titleEl.innerHTML = `<span class="spinner"></span> ${label} <span class="elapsed">(${_elapsed(startedAt)})</span>`;
+      }
+
       if (task.status === "done") {
         clearInterval(_pollTimer);
-        document.getElementById("task-drawer-title").innerHTML = `<span style="color:var(--green)">&#10003;</span> ${label} Done.`;
+        const dur = startedAt && task.ended_at
+          ? ` in ${_elapsed(startedAt)}`
+          : "";
+        titleEl.innerHTML = `<span style="color:var(--green)">&#10003;</span> ${label} Done${dur}.`;
         const done = document.createElement("div");
         done.className = "log-done";
-        done.textContent = "Completed.";
+        done.textContent = `Completed${dur}.`;
         logEl.appendChild(done);
+        logEl.scrollTop = logEl.scrollHeight;
         if (onDone) onDone();
       } else if (task.status === "error") {
         clearInterval(_pollTimer);
-        document.getElementById("task-drawer-title").innerHTML = `<span style="color:var(--red)">&#x2717;</span> ${label} Failed.`;
+        const dur = startedAt ? ` after ${_elapsed(startedAt)}` : "";
+        titleEl.innerHTML = `<span style="color:var(--red)">&#x2717;</span> ${label} Failed${dur}.`;
       }
     }, 1500);
   }

@@ -151,6 +151,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 #task-log { flex: 1; overflow-y: auto; padding: 10px 16px; font-family: var(--mono); font-size: 12px; line-height: 1.6; color: var(--text-muted); }
 #task-log .log-error { color: var(--red); }
 #task-log .log-done  { color: var(--green); font-weight: 500; }
+.elapsed { color: var(--text-muted); font-size: 12px; font-weight: 400; margin-left: 6px; }
 
 /* Auth overlay */
 #auth-overlay { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 999; }

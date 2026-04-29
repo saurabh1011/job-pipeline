@@ -11,6 +11,7 @@ import threading
 import time
 import traceback
 import uuid
+from datetime import datetime, timezone
 from typing import Callable, Dict, Optional
 
 import requests
@@ -73,29 +74,34 @@ def get_task(task_id: str) -> Optional[dict]:
 def create_task(fn: Callable, *args, **kwargs) -> str:
     """Start fn(*args, **kwargs) in a background thread. Returns task_id."""
     task_id = _make_id()
-    task = {"id": task_id, "status": "pending", "logs": [], "result": None}
+    task = {"id": task_id, "status": "pending", "logs": [], "result": None,
+            "started_at": None, "ended_at": None}
 
     with _lock:
         _tasks[task_id] = task
 
     def _log(msg: str):
+        ts = datetime.now().strftime("%H:%M:%S")
         with _lock:
-            _tasks[task_id]["logs"].append(msg)
+            _tasks[task_id]["logs"].append(f"[{ts}] {msg}")
 
     def _run():
         _start_keepalive()
         with _lock:
             _tasks[task_id]["status"] = "running"
+            _tasks[task_id]["started_at"] = datetime.now(timezone.utc).isoformat()
         try:
             result = fn(_log, *args, **kwargs)
             with _lock:
                 _tasks[task_id]["status"] = "done"
                 _tasks[task_id]["result"] = result
+                _tasks[task_id]["ended_at"] = datetime.now(timezone.utc).isoformat()
         except Exception as e:
             with _lock:
                 _tasks[task_id]["status"] = "error"
                 _tasks[task_id]["logs"].append(f"ERROR: {e}")
                 _tasks[task_id]["logs"].append(traceback.format_exc())
+                _tasks[task_id]["ended_at"] = datetime.now(timezone.utc).isoformat()
         finally:
             _stop_keepalive()
 
