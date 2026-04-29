@@ -103,7 +103,9 @@ class GooglePlaywrightFetcher:
                 break
 
         results = []
-        for c in candidates:
+        for i, c in enumerate(candidates):
+            if i > 0:
+                page.wait_for_timeout(3000)  # avoid rate-limiting between detail fetches
             desc = self._get_description(page, c["url"])
             results.append({
                 "job_id": c["job_id"],
@@ -118,8 +120,8 @@ class GooglePlaywrightFetcher:
 
     def _get_description(self, page: Page, url: str) -> str:
         try:
-            page.goto(url, timeout=30000)
-            page.wait_for_timeout(3000)
+            page.goto(url, timeout=45000)
+            page.wait_for_timeout(4000)
             parts = []
             for sel in [".aG5W3", ".KwJkGe", ".BDNOWe"]:
                 el = page.query_selector(sel)
