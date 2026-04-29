@@ -317,6 +317,10 @@ def _do_full_run(log, company_filter: list = None):
     threshold = prefs.get("match_threshold", 7)
     provider = create_provider(prefs)
 
+    playwright_ats = {"google", "apple", "meta", "walmart"}
+    uses_playwright = any(c.get("ats") in playwright_ats for c in companies)
+    if uses_playwright:
+        log("Launching browser (Playwright) — this may take several minutes...")
     all_jobs = fetch_all_companies(companies, prefs)
     log(f"Fetched {len(all_jobs)} matching jobs")
 

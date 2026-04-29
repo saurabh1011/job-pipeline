@@ -32,7 +32,7 @@ _UA = (
 class GooglePlaywrightFetcher:
     """Fetches EM roles from careers.google.com (React SPA)."""
 
-    _SEARCH = "https://careers.google.com/jobs/results/"
+    _SEARCH = "https://www.google.com/about/careers/applications/jobs/results/"
 
     def __init__(self, company_name: str = "Google"):
         self.company_name = company_name
@@ -51,8 +51,8 @@ class GooglePlaywrightFetcher:
     def _fetch_keyword(self, keyword: str, preferences: dict, page: Page) -> List[dict]:
         try:
             page.goto(f"{self._SEARCH}?q={keyword.replace(' ', '+')}&location=United+States",
-                      timeout=25000)
-            page.wait_for_timeout(4000)
+                      timeout=45000)
+            page.wait_for_timeout(5000)
         except Exception as exc:
             logger.warning("Google page load failed for '%s': %s", keyword, exc)
             return []
