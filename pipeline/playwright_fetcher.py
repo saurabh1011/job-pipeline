@@ -57,15 +57,9 @@ class GooglePlaywrightFetcher:
             logger.warning("Google page load failed for '%s': %s", keyword, exc)
             return []
 
+        base = "https://www.google.com/about/careers/applications/"
         candidates = []
-        # Each job card has a div with jsdata="Aiqs8c;{job_id};$2"
-        for card in page.query_selector_all("div[jsdata*=';']"):
-            jsdata = card.get_attribute("jsdata") or ""
-            match = re.search(r";(\d{15,});", jsdata)
-            if not match:
-                continue
-            job_id = match.group(1)
-
+        for card in page.query_selector_all(".sMn82b"):
             title_el = card.query_selector("h3.QJPWVe")
             if not title_el:
                 continue
@@ -80,12 +74,12 @@ class GooglePlaywrightFetcher:
                 continue
 
             link_el = card.query_selector("a[href*='jobs/results/']")
-            href = (link_el.get_attribute("href") or "") if link_el else ""
-            href = href.split("?")[0]
-            if href and not href.startswith("http"):
-                job_url = f"https://careers.google.com/{href}"
-            else:
-                job_url = href or f"https://careers.google.com/jobs/results/{job_id}"
+            href = (link_el.get_attribute("href") or "").split("?")[0] if link_el else ""
+            job_id_match = re.search(r"(\d{15,})", href)
+            job_id = job_id_match.group(1) if job_id_match else ""
+            if not job_id:
+                continue
+            job_url = base + href if href and not href.startswith("http") else href
 
             candidates.append({"job_id": job_id, "title": title, "location": location,
                                 "url": job_url})
@@ -106,10 +100,14 @@ class GooglePlaywrightFetcher:
 
     def _get_description(self, page: Page, url: str) -> str:
         try:
-            page.goto(url, timeout=20000)
-            page.wait_for_timeout(2000)
-            el = page.query_selector(".aG5W3") or page.query_selector(".KwJkGe")
-            return el.inner_text().strip() if el else ""
+            page.goto(url, timeout=30000)
+            page.wait_for_timeout(3000)
+            parts = []
+            for sel in [".aG5W3", ".KwJkGe", ".BDNOWe"]:
+                el = page.query_selector(sel)
+                if el:
+                    parts.append(el.inner_text().strip())
+            return "\n\n".join(parts)
         except Exception as exc:
             logger.warning("Google description fetch failed for %s: %s", url, exc)
             return ""
