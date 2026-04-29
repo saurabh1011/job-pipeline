@@ -48,41 +48,59 @@ class GooglePlaywrightFetcher:
         logger.info("Google: %d matching jobs found", len(results))
         return results
 
+    _MAX_PAGES = 5
+    _BASE = "https://www.google.com/about/careers/applications/"
+
     def _fetch_keyword(self, keyword: str, preferences: dict, page: Page) -> List[dict]:
-        try:
-            page.goto(f"{self._SEARCH}?q={keyword.replace(' ', '+')}&location=United+States",
-                      timeout=45000)
-            page.wait_for_timeout(5000)
-        except Exception as exc:
-            logger.warning("Google page load failed for '%s': %s", keyword, exc)
-            return []
-
-        base = "https://www.google.com/about/careers/applications/"
+        q = keyword.replace(' ', '+')
         candidates = []
-        for card in page.query_selector_all(".sMn82b"):
-            title_el = card.query_selector("h3.QJPWVe")
-            if not title_el:
-                continue
-            title = title_el.inner_text().strip()
-            if not _matches_title(title, preferences):
-                continue
 
-            location_el = card.query_selector("span.r0wTof")
-            location = location_el.inner_text().strip() if location_el else ""
-            if not _matches_location(location, preferences):
-                logger.debug("Google excluded by location: %s — %s", title, location)
-                continue
+        for page_num in range(1, self._MAX_PAGES + 1):
+            url = f"{self._SEARCH}?q={q}&location=United+States"
+            if page_num > 1:
+                url += f"&page={page_num}"
+            try:
+                page.goto(url, timeout=45000)
+                page.wait_for_timeout(5000)
+            except Exception as exc:
+                logger.warning("Google page load failed for '%s' page %d: %s", keyword, page_num, exc)
+                break
 
-            link_el = card.query_selector("a[href*='jobs/results/']")
-            href = (link_el.get_attribute("href") or "").split("?")[0] if link_el else ""
-            job_id_match = re.search(r"(\d{15,})", href)
-            job_id = job_id_match.group(1) if job_id_match else ""
-            if not job_id:
-                continue
-            job_url = base + href if href and not href.startswith("http") else href
+            cards = page.query_selector_all(".sMn82b")
+            if not cards:
+                break
 
-            candidates.append({"job_id": job_id, "title": title, "location": location,
-                                "url": job_url})
+            page_candidates = []
+            for card in cards:
+                title_el = card.query_selector("h3.QJPWVe")
+                if not title_el:
+                    continue
+                title = title_el.inner_text().strip()
+                if not _matches_title(title, preferences):
+                    continue
+
+                location_el = card.query_selector("span.r0wTof")
+                location = location_el.inner_text().strip() if location_el else ""
+                if not _matches_location(location, preferences):
+                    logger.debug("Google excluded by location: %s — %s", title, location)
+                    continue
+
+                link_el = card.query_selector("a[href*='jobs/results/']")
+                href = (link_el.get_attribute("href") or "").split("?")[0] if link_el else ""
+                job_id_match = re.search(r"(\d{15,})", href)
+                job_id = job_id_match.group(1) if job_id_match else ""
+                if not job_id:
+                    continue
+                job_url = self._BASE + href if href and not href.startswith("http") else href
+                page_candidates.append({"job_id": job_id, "title": title,
+                                        "location": location, "url": job_url})
+
+            candidates.extend(page_candidates)
+            logger.info("Google '%s' page %d: %d matching cards", keyword, page_num, len(page_candidates))
+
+            # Stop early if this page returned fewer than 20 cards (last page)
+            if len(cards) < 20:
+                break
 
         results = []
         for c in candidates:
