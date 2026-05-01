@@ -5,6 +5,7 @@ Run from project root:
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -396,10 +397,121 @@ class RunRequest(BaseModel):
 
 @app.get("/api/companies")
 def list_companies(_=Depends(require_api_key)):
-    """Return the list of configured company names."""
+    """Return the list of configured company names (used by run-group dropdown)."""
     with open(os.path.join(CONFIG_DIR, "companies.yaml")) as f:
         data = yaml.safe_load(f)
     return [c["name"] for c in data.get("companies", [])]
+
+
+# ── Settings: companies ───────────────────────────────────────────────────────
+
+def _read_companies_cfg() -> list:
+    with open(os.path.join(CONFIG_DIR, "companies.yaml")) as f:
+        return yaml.safe_load(f).get("companies", [])
+
+
+def _write_companies_cfg(companies: list):
+    path = os.path.join(CONFIG_DIR, "companies.yaml")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        yaml.dump({"companies": companies}, f, default_flow_style=False,
+                  allow_unicode=True, sort_keys=False)
+    shutil.move(tmp, path)
+
+
+class CompanyDetectRequest(BaseModel):
+    name: str
+
+
+class CompanyAddRequest(BaseModel):
+    name: str
+    ats: str
+    board_slug: Optional[str] = None
+    department: Optional[str] = None
+    company_id: Optional[str] = None
+
+
+@app.post("/api/companies/detect")
+def detect_company_ats(body: CompanyDetectRequest, _=Depends(require_api_key)):
+    """Auto-detect ATS platform for a company name."""
+    from pipeline.detect_ats import detect_ats
+    return detect_ats(body.name)
+
+
+@app.get("/api/settings/companies")
+def settings_list_companies(_=Depends(require_api_key)):
+    """Return full company config list for the settings panel."""
+    return _read_companies_cfg()
+
+
+@app.post("/api/settings/companies")
+def settings_add_company(body: CompanyAddRequest, _=Depends(require_api_key)):
+    companies = _read_companies_cfg()
+    if any(c["name"].lower() == body.name.lower() for c in companies):
+        raise HTTPException(status_code=409, detail=f"'{body.name}' already exists")
+    entry: dict = {"name": body.name, "ats": body.ats}
+    if body.board_slug:
+        entry["board_slug"] = body.board_slug
+    if body.department:
+        entry["department"] = body.department
+    if body.company_id:
+        entry["company_id"] = body.company_id
+    companies.append(entry)
+    _write_companies_cfg(companies)
+    return {"ok": True, "company": entry}
+
+
+@app.delete("/api/settings/companies/{name}")
+def settings_remove_company(name: str, _=Depends(require_api_key)):
+    companies = _read_companies_cfg()
+    filtered = [c for c in companies if c["name"] != name]
+    if len(filtered) == len(companies):
+        raise HTTPException(status_code=404, detail=f"'{name}' not found")
+    _write_companies_cfg(filtered)
+    return {"ok": True}
+
+
+# ── Settings: preferences ─────────────────────────────────────────────────────
+
+_PREFS_UI_KEYS = frozenset({
+    "match_threshold", "preferred_locations", "acceptable_locations",
+    "excluded_location_keywords", "us_only", "title_keywords",
+    "title_exclude_keywords", "llm_provider",
+})
+
+
+@app.get("/api/settings/preferences")
+def settings_get_preferences(_=Depends(require_api_key)):
+    prefs = _load_prefs()
+    return {k: v for k, v in prefs.items() if k in _PREFS_UI_KEYS}
+
+
+class PreferencesUpdate(BaseModel):
+    match_threshold: Optional[int] = None
+    preferred_locations: Optional[List[str]] = None
+    acceptable_locations: Optional[List[str]] = None
+    excluded_location_keywords: Optional[List[str]] = None
+    us_only: Optional[bool] = None
+    title_keywords: Optional[List[str]] = None
+    title_exclude_keywords: Optional[List[str]] = None
+    llm_provider: Optional[str] = None
+
+
+@app.put("/api/settings/preferences")
+def settings_save_preferences(body: PreferencesUpdate, _=Depends(require_api_key)):
+    path = os.path.join(CONFIG_DIR, "preferences.yaml")
+    with open(path) as f:
+        current = yaml.safe_load(f) or {}
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    # us_only can legitimately be False — include it even when False
+    if body.us_only is not None:
+        updates["us_only"] = body.us_only
+    current.update(updates)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        yaml.dump(current, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    shutil.move(tmp, path)
+    return {"ok": True}
 
 
 @app.post("/api/pipeline/run")

@@ -525,6 +525,190 @@ const App = (() => {
     }
   }
 
+  // ── Settings panel ────────────────────────────────────────────────────────
+
+  let _prefs = null;
+  let _settingsCompanies = [];
+
+  const _ATS_LABELS = {
+    greenhouse: "GH", ashby: "AS", lever: "LV", google: "GO", apple: "AP",
+    meta: "ME", microsoft: "MS", uber: "UB", walmart: "WM", netflix: "NF",
+    zillow: "ZI", amazon: "AZ", linkedin: "LI",
+  };
+
+  const _CHIP_FIELDS = [
+    "title_keywords", "title_exclude_keywords",
+    "preferred_locations", "acceptable_locations", "excluded_location_keywords",
+  ];
+
+  function openSettings() {
+    document.getElementById("settings-panel").classList.add("open");
+    _loadSettingsData();
+  }
+
+  function closeSettings() {
+    document.getElementById("settings-panel").classList.remove("open");
+  }
+
+  async function _loadSettingsData() {
+    try {
+      [_settingsCompanies, _prefs] = await Promise.all([
+        _api("GET", "/api/settings/companies"),
+        _api("GET", "/api/settings/preferences"),
+      ]);
+      _renderSettingsCompanies();
+      _renderSettingsPreferences();
+    } catch (e) {
+      console.error("Failed to load settings:", e);
+    }
+  }
+
+  function settingsTab(tab) {
+    ["companies", "preferences"].forEach(t => {
+      document.getElementById(`settings-tab-${t}`).style.display = t === tab ? "" : "none";
+      const btn = document.querySelector(`.settings-tab[data-tab="${t}"]`);
+      if (btn) btn.classList.toggle("active", t === tab);
+    });
+  }
+
+  // ── Settings: companies ────────────────────────────────────────────────────
+
+  function _renderSettingsCompanies() {
+    const list = document.getElementById("settings-company-list");
+    if (!_settingsCompanies.length) {
+      list.innerHTML = '<div class="settings-empty">No companies configured.</div>';
+      return;
+    }
+    list.innerHTML = _settingsCompanies.map((c, i) => {
+      const badge = _ATS_LABELS[c.ats] || c.ats.slice(0, 2).toUpperCase();
+      return `
+        <div class="settings-company-row">
+          <span class="ats-badge">${_esc(badge)}</span>
+          <div class="company-info">
+            <span class="company-name-text">${_esc(c.name)}</span>
+            ${c.board_slug ? `<span class="company-slug">${_esc(c.board_slug)}</span>` : ""}
+          </div>
+          <button class="btn-danger btn-sm" onclick="App.removeCompany(${i})">Remove</button>
+        </div>`;
+    }).join("");
+  }
+
+  async function removeCompany(idx) {
+    const company = _settingsCompanies[idx];
+    if (!company || !confirm(`Remove ${company.name}?`)) return;
+    try {
+      await _api("DELETE", `/api/settings/companies/${encodeURIComponent(company.name)}`);
+      _settingsCompanies.splice(idx, 1);
+      _renderSettingsCompanies();
+      _loadGroupSelect();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function detectAts() {
+    const name = document.getElementById("new-company-name").value.trim();
+    if (!name) return;
+    const btn = document.getElementById("detect-btn");
+    btn.disabled = true;
+    btn.textContent = "Detecting…";
+    document.getElementById("detect-result").style.display = "none";
+    try {
+      const result = await _api("POST", "/api/companies/detect", { name });
+      const statusEl = document.getElementById("detect-status");
+      document.getElementById("detect-result").style.display = "";
+      if (result.ats) {
+        document.getElementById("new-ats").value = result.ats;
+        document.getElementById("new-slug").value = result.board_slug || "";
+        statusEl.textContent = `Detected: ${result.ats}${result.board_slug ? " / " + result.board_slug : ""}`;
+        statusEl.className = "detect-status detect-ok";
+      } else {
+        statusEl.textContent = result.error || "Could not detect ATS. Fill in manually.";
+        statusEl.className = "detect-status detect-error";
+      }
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Auto-detect";
+    }
+  }
+
+  async function addCompany() {
+    const name = document.getElementById("new-company-name").value.trim();
+    const ats  = document.getElementById("new-ats").value;
+    const slug = document.getElementById("new-slug").value.trim();
+    if (!name || !ats) { alert("Name and ATS are required."); return; }
+    try {
+      await _api("POST", "/api/settings/companies", { name, ats, board_slug: slug || null });
+      document.getElementById("new-company-name").value = "";
+      document.getElementById("new-slug").value = "";
+      document.getElementById("detect-result").style.display = "none";
+      _settingsCompanies = await _api("GET", "/api/settings/companies");
+      _renderSettingsCompanies();
+      _loadGroupSelect();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  // ── Settings: preferences ──────────────────────────────────────────────────
+
+  function _renderSettingsPreferences() {
+    if (!_prefs) return;
+    document.getElementById("pref-threshold").value = _prefs.match_threshold ?? 7;
+    document.getElementById("pref-llm").value = _prefs.llm_provider || "gemini";
+    document.getElementById("pref-us-only").checked = !!_prefs.us_only;
+    _CHIP_FIELDS.forEach(key => _renderChips(key));
+  }
+
+  function _renderChips(key) {
+    const container = document.getElementById(`chips-${key}`);
+    if (!container) return;
+    const items = (_prefs && _prefs[key]) || [];
+    container.innerHTML =
+      items.map((item, i) =>
+        `<span class="chip">${_esc(item)}<button class="chip-x" onclick="App.removeChip('${_esc(key)}',${i})">&#xd7;</button></span>`
+      ).join("") +
+      `<input class="chip-input" placeholder="Add…" onkeydown="App.chipKeydown(event,'${_esc(key)}',this)">`;
+  }
+
+  function removeChip(key, idx) {
+    if (!_prefs || !_prefs[key]) return;
+    _prefs[key] = _prefs[key].filter((_, i) => i !== idx);
+    _renderChips(key);
+  }
+
+  function chipKeydown(event, key, input) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const val = input.value.trim();
+    if (!val) return;
+    if (!_prefs[key]) _prefs[key] = [];
+    if (!_prefs[key].includes(val)) _prefs[key].push(val);
+    _renderChips(key);
+  }
+
+  async function savePreferences() {
+    const updates = {
+      match_threshold: parseInt(document.getElementById("pref-threshold").value, 10) || 7,
+      llm_provider:   document.getElementById("pref-llm").value,
+      us_only:        document.getElementById("pref-us-only").checked,
+    };
+    _CHIP_FIELDS.forEach(key => { updates[key] = (_prefs && _prefs[key]) || []; });
+
+    const btn = document.getElementById("save-prefs-btn");
+    btn.disabled = true;
+    try {
+      await _api("PUT", "/api/settings/preferences", updates);
+      btn.textContent = "Saved!";
+      setTimeout(() => { btn.textContent = "Save Preferences"; btn.disabled = false; }, 2000);
+    } catch (e) {
+      alert(e.message);
+      btn.disabled = false;
+    }
+  }
+
   // ── Task progress drawer ──────────────────────────────────────────────────
 
   function _elapsed(startedAt) {
@@ -674,5 +858,8 @@ const App = (() => {
            setStatus, bulkStatusFromSelect, rescore, regenerate, exportPDF,
            triggerRun,
            closeDrawer, submitApiKey,
-           toggleSelectMode, toggleCheck, clearSelection, bulkStatus };
+           toggleSelectMode, toggleCheck, clearSelection, bulkStatus,
+           openSettings, closeSettings, settingsTab,
+           removeCompany, detectAts, addCompany,
+           removeChip, chipKeydown, savePreferences };
 })();

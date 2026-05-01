@@ -96,6 +96,10 @@ companies:
     ats: greenhouse
     board_slug: hubspot
 
+  - name: CoreWeave
+    ats: greenhouse
+    board_slug: coreweave
+
   # ── Ashby ───────────────────────────────────────────────────────────────────
   - name: OpenAI
     ats: ashby
