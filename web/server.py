@@ -222,160 +222,165 @@ def export_pdf(company: str, job_id: str, _=Depends(require_api_key)):
 
 # ── Pipeline actions ──────────────────────────────────────────────────────────
 
-def _do_process(log):
-    """Score unscored jobs + generate materials for those that meet threshold."""
+_PLAYWRIGHT_ATS = {"google", "apple", "meta", "walmart"}
+
+
+def _resolve_companies(all_companies: list, group: Optional[str], company_filter: Optional[List[str]]) -> list:
+    """Return company config list based on group name or explicit names."""
+    if company_filter:
+        names = set(company_filter)
+        return [c for c in all_companies if c["name"] in names]
+    if group == "playwright":
+        return [c for c in all_companies if c.get("ats") in _PLAYWRIGHT_ATS]
+    if group == "http":
+        return [c for c in all_companies if c.get("ats") not in _PLAYWRIGHT_ATS]
+    return all_companies
+
+
+def _score_job_list(log, jobs: list, prefs: dict, provider, threshold: int, gen, loader) -> tuple:
+    """Score a list of jobs, generate materials for those above threshold. Returns (scored, generated)."""
     from pipeline.matcher import MatchEngine
-    from pipeline.generator import ContentGenerator
-    from pipeline.profile import ProfileLoader
-    from pipeline.llm import create_provider
-
-    prefs = _load_prefs()
-    threshold = prefs.get("match_threshold", 7)
-    provider = create_provider(prefs)
-    store = JobStore(DB_PATH)
-
-    try:
-        all_jobs = store.list_all_jobs()
-        unscored = [j for j in all_jobs if j.get("match_score") is None]
-    finally:
-        store.close()
-
-    log(f"Found {len(unscored)} unscored job(s). Threshold: {threshold}/10")
-    if not unscored:
-        log("Nothing to do.")
-        return {"scored": 0, "generated": 0}
-
     engine = MatchEngine(provider=provider)
-    gen = ContentGenerator(provider=provider, output_dir=OUTPUT_DIR)
-    loader = ProfileLoader(
-        profile_dir=PROFILE_DIR,
-        google_docs_links=prefs.get("google_docs_links", []),
-        provider=provider,
-    )
-
-    scored = 0
-    generated = 0
-    for i, job in enumerate(unscored, 1):
+    scored = generated = 0
+    n = len(jobs)
+    for i, job in enumerate(jobs, 1):
         company, job_id, title = job["company"], job["job_id"], job["title"]
-        log(f"[{i}/{len(unscored)}] Scoring: {company} — {title}")
+        log(f"[{i}/{n}] Scoring: {company} — {title}")
         try:
             profile = loader.load(job=job)
             result = engine.score(job, profile, prefs)
-            store2 = JobStore(DB_PATH)
-            store2.set_match_score(
-                company, job_id, result.adjusted_score, result.summary,
-                strengths=result.strengths, gaps=result.gaps,
-            )
+            store = JobStore(DB_PATH)
+            store.set_match_score(company, job_id, result.adjusted_score, result.summary,
+                                  strengths=result.strengths, gaps=result.gaps)
             scored += 1
             log(f"  → {result.adjusted_score}/10  {result.summary[:80]}")
-
             if result.meets_threshold(threshold):
                 log(f"  Generating materials...")
                 gen.generate(job, profile)
-                store2.update_status(company, job_id, JobStatus.ALERTED)
+                store.update_status(company, job_id, JobStatus.ALERTED)
                 generated += 1
                 log(f"  → saved to output/{company}_{job_id}/")
             else:
-                store2.update_status(company, job_id, JobStatus.SKIPPED)
-            store2.close()
+                store.update_status(company, job_id, JobStatus.SKIPPED)
+            store.close()
         except Exception as e:
             log(f"  ERROR: {e}")
-
-    log(f"\nDone. Scored: {scored}  Generated: {generated}")
-    return {"scored": scored, "generated": generated}
+    return scored, generated
 
 
-@app.post("/api/pipeline/process")
-def pipeline_process(_=Depends(require_api_key)):
-    """Score unscored jobs and generate materials for high-match ones."""
-    task_id = create_task(_do_process)
-    return {"task_id": task_id}
+def _do_run(log, group: str = None, company_filter: list = None, action: str = "source_and_score"):
+    """Unified pipeline action.
 
-
-def _do_full_run(log, company_filter: list = None):
-    """Fetch new jobs from selected companies, then score and generate.
-
-    Args:
-        company_filter: list of company names to run (None = all companies)
+    action:
+      source          — fetch only, no scoring
+      source_and_score — fetch then score newly added jobs
+      score           — score unscored jobs for selected companies (no fetch)
+      rescore         — force-rescore all jobs for selected companies (no fetch)
+    group: "http" | "playwright" | None (all)
+    company_filter: list of specific company names (overrides group)
     """
     from pipeline.fetcher import fetch_all_companies
-    from pipeline.matcher import MatchEngine
     from pipeline.generator import ContentGenerator
     from pipeline.profile import ProfileLoader
     from pipeline.llm import create_provider
 
     with open(os.path.join(CONFIG_DIR, "companies.yaml")) as f:
-        companies_data = yaml.safe_load(f)
+        all_companies_cfg = yaml.safe_load(f).get("companies", [])
     prefs = _load_prefs()
-    all_companies = companies_data.get("companies", [])
-    if company_filter:
-        companies = [c for c in all_companies if c["name"] in company_filter]
-        log(f"Fetching jobs from {len(companies)} selected companies: {', '.join(company_filter)}")
-    else:
-        companies = all_companies
-        log(f"Fetching jobs from {len(companies)} companies...")
+    companies = _resolve_companies(all_companies_cfg, group, company_filter)
+    company_names = {c["name"] for c in companies}
     threshold = prefs.get("match_threshold", 7)
     provider = create_provider(prefs)
-
-    playwright_ats = {"google", "apple", "meta", "walmart"}
-    uses_playwright = any(c.get("ats") in playwright_ats for c in companies)
-    if uses_playwright:
-        log("Launching browser (Playwright) — this may take several minutes...")
-    all_jobs = fetch_all_companies(companies, prefs)
-    log(f"Fetched {len(all_jobs)} matching jobs")
-
-    store = JobStore(DB_PATH)
-    new_jobs = []
-    for job in all_jobs:
-        if store.upsert_job(job):
-            new_jobs.append(job)
-    store.close()
-    log(f"{len(new_jobs)} new job(s) added to database")
-
-    if not new_jobs:
-        log("No new jobs to score.")
-        return {"fetched": len(all_jobs), "new": 0, "scored": 0, "generated": 0}
-
-    engine = MatchEngine(provider=provider)
     gen = ContentGenerator(provider=provider, output_dir=OUTPUT_DIR)
-    loader = ProfileLoader(
-        profile_dir=PROFILE_DIR,
-        google_docs_links=prefs.get("google_docs_links", []),
-        provider=provider,
-    )
+    loader = ProfileLoader(profile_dir=PROFILE_DIR,
+                           google_docs_links=prefs.get("google_docs_links", []),
+                           provider=provider)
 
-    scored = generated = 0
-    for i, job in enumerate(new_jobs, 1):
-        company, job_id, title = job["company"], job["job_id"], job["title"]
-        log(f"[{i}/{len(new_jobs)}] Scoring: {company} — {title}")
-        try:
-            profile = loader.load(job=job)
-            result = engine.score(job, profile, prefs)
-            store2 = JobStore(DB_PATH)
-            store2.set_match_score(
-                company, job_id, result.adjusted_score, result.summary,
-                strengths=result.strengths, gaps=result.gaps,
-            )
-            scored += 1
-            log(f"  → {result.adjusted_score}/10  {result.summary[:80]}")
-            if result.meets_threshold(threshold):
-                log(f"  Generating materials...")
-                gen.generate(job, profile)
-                store2.update_status(company, job_id, JobStatus.ALERTED)
-                generated += 1
-                log(f"  → saved to output/{company}_{job_id}/")
-            else:
-                store2.update_status(company, job_id, JobStatus.SKIPPED)
-            store2.close()
-        except Exception as e:
-            log(f"  ERROR: {e}")
+    fetched_all = []
+    new_jobs = []
 
-    log(f"\nDone. Fetched: {len(all_jobs)}  New: {len(new_jobs)}  Scored: {scored}  Generated: {generated}")
-    return {"fetched": len(all_jobs), "new": len(new_jobs), "scored": scored, "generated": generated}
+    # ── Fetch phase ──────────────────────────────────────────────────────────
+    if action in ("source", "source_and_score"):
+        group_label = group or "all"
+        log(f"Fetching from {len(companies)} companies ({group_label})...")
+        uses_playwright = any(c.get("ats") in _PLAYWRIGHT_ATS for c in companies)
+        if uses_playwright:
+            log("Launching browser (Playwright) — this may take several minutes...")
+        fetched_all = fetch_all_companies(companies, prefs, log=log)
+        store = JobStore(DB_PATH)
+        for job in fetched_all:
+            if store.upsert_job(job):
+                new_jobs.append(job)
+        store.close()
+        log(f"Fetched {len(fetched_all)} matching jobs, {len(new_jobs)} new")
+        if action == "source":
+            log(f"\nDone. Fetched: {len(fetched_all)}  New: {len(new_jobs)}")
+            return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": 0, "generated": 0}
+
+    # ── Determine jobs to score ───────────────────────────────────────────────
+    if action == "source_and_score":
+        jobs_to_score = new_jobs
+        log(f"{len(jobs_to_score)} new job(s) to score.")
+    else:
+        store = JobStore(DB_PATH)
+        all_db_jobs = store.list_all_jobs()
+        store.close()
+        if action == "score":
+            jobs_to_score = [j for j in all_db_jobs
+                             if j.get("match_score") is None
+                             and (not company_names or j["company"] in company_names)]
+            log(f"{len(jobs_to_score)} unscored job(s) for selected companies.")
+        else:  # rescore
+            jobs_to_score = [j for j in all_db_jobs
+                             if not company_names or j["company"] in company_names]
+            log(f"Force-rescoring {len(jobs_to_score)} job(s) for selected companies.")
+
+    if not jobs_to_score:
+        log("Nothing to score.")
+        return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": 0, "generated": 0}
+
+    scored, generated = _score_job_list(log, jobs_to_score, prefs, provider, threshold, gen, loader)
+    log(f"\nDone. Fetched: {len(fetched_all)}  New: {len(new_jobs)}  Scored: {scored}  Generated: {generated}")
+    return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": scored, "generated": generated}
+
+
+def _do_rescore_job(log, company: str, job_id: str):
+    """Rescore a single job and update its score/strengths/gaps in the DB."""
+    from pipeline.matcher import MatchEngine
+    from pipeline.profile import ProfileLoader
+    from pipeline.llm import create_provider
+
+    prefs = _load_prefs()
+    provider = create_provider(prefs)
+    store = JobStore(DB_PATH)
+    try:
+        job = store.get_job(company, job_id)
+    finally:
+        store.close()
+    if not job:
+        raise ValueError(f"Job not found: {company}/{job_id}")
+
+    log(f"Rescoring: {job['company']} — {job['title']}")
+    loader = ProfileLoader(profile_dir=PROFILE_DIR,
+                           google_docs_links=prefs.get("google_docs_links", []),
+                           provider=provider)
+    engine = MatchEngine(provider=provider)
+    profile = loader.load(job=job)
+    result = engine.score(job, profile, prefs)
+
+    store2 = JobStore(DB_PATH)
+    store2.set_match_score(company, job_id, result.adjusted_score, result.summary,
+                           strengths=result.strengths, gaps=result.gaps)
+    store2.close()
+    log(f"  → {result.adjusted_score}/10  {result.summary[:80]}")
+    return {"match_score": result.adjusted_score, "match_summary": result.summary,
+            "match_strengths": result.strengths, "match_gaps": result.gaps}
 
 
 class RunRequest(BaseModel):
-    companies: Optional[List[str]] = None
+    action: str = "source_and_score"  # source | source_and_score | score | rescore
+    group: Optional[str] = None       # http | playwright | None (all)
+    companies: Optional[List[str]] = None  # specific names; overrides group
 
 
 @app.get("/api/companies")
@@ -387,13 +392,32 @@ def list_companies(_=Depends(require_api_key)):
 
 
 @app.post("/api/pipeline/run")
-def pipeline_full_run(body: RunRequest = RunRequest(), _=Depends(require_api_key)):
-    """Full run: fetch new jobs from selected (or all) companies, score, and generate materials."""
-    task_id = create_task(_do_full_run, body.companies or None)
+def pipeline_run(body: RunRequest = RunRequest(), _=Depends(require_api_key)):
+    """Run a pipeline action for selected companies."""
+    task_id = create_task(_do_run, body.group, body.companies or None, body.action)
+    return {"task_id": task_id}
+
+
+@app.post("/api/jobs/{company}/{job_id}/rescore")
+def rescore_job(company: str, job_id: str, _=Depends(require_api_key)):
+    """Rescore a single job (useful after model or resume changes)."""
+    store = JobStore(DB_PATH)
+    try:
+        if not store.get_job(company, job_id):
+            raise HTTPException(status_code=404, detail="Job not found")
+    finally:
+        store.close()
+    task_id = create_task(_do_rescore_job, company, job_id)
     return {"task_id": task_id}
 
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────
+
+@app.get("/api/tasks")
+def task_list(_=Depends(require_api_key)):
+    from web.tasks import list_tasks
+    return list_tasks()
+
 
 @app.get("/api/tasks/{task_id}")
 def task_status(task_id: str, _=Depends(require_api_key)):

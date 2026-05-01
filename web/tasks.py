@@ -33,16 +33,20 @@ _keepalive_thread: Optional[threading.Thread] = None
 
 
 def _keepalive_loop():
-    """Ping the app's own external URL every 2 minutes while tasks are running."""
+    """Ping the app's own external URL every 2 minutes while tasks are running.
+
+    Pings immediately on start so the first keepalive lands before any idle
+    timeout can fire, then continues on the regular interval.
+    """
     while True:
-        time.sleep(_KEEPALIVE_INTERVAL)
-        with _active_lock:
-            if _active_tasks == 0:
-                return
         try:
             requests.get(_KEEPALIVE_URL, timeout=10)
         except Exception:
             pass
+        time.sleep(_KEEPALIVE_INTERVAL)
+        with _active_lock:
+            if _active_tasks == 0:
+                return
 
 
 def _start_keepalive():
@@ -69,6 +73,11 @@ def _make_id() -> str:
 
 def get_task(task_id: str) -> Optional[dict]:
     return _tasks.get(task_id)
+
+
+def list_tasks() -> list:
+    with _lock:
+        return list(_tasks.values())
 
 
 def create_task(fn: Callable, *args, **kwargs) -> str:

@@ -62,6 +62,7 @@ companies:
   - name: Spotify
     ats: lever
     board_slug: spotify
+    department: Engineering  # Lever caps at 100 results with no pagination; Engineering filter surfaces EM roles
 
   - name: Instacart
     ats: greenhouse

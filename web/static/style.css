@@ -23,9 +23,11 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border); gap: 12px; flex-wrap: wrap; }
 header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.02em; }
 .header-actions { display: flex; gap: 8px; align-items: center; }
-.run-company-group { display: flex; gap: 0; align-items: center; }
-.run-company-group select { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-right: none; border-radius: var(--radius) 0 0 var(--radius); padding: 5px 8px; font-size: 13px; min-width: 140px; max-width: 200px; cursor: pointer; }
-.run-company-group .btn-warn { border-radius: 0 var(--radius) var(--radius) 0; }
+.run-group { display: flex; gap: 0; align-items: center; }
+.run-group select { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-right: none; padding: 5px 8px; font-size: 13px; cursor: pointer; }
+.run-group select:first-child { border-radius: var(--radius) 0 0 var(--radius); min-width: 130px; }
+.run-group select:not(:first-child) { border-radius: 0; min-width: 110px; }
+.run-group .btn-warn { border-radius: 0 var(--radius) var(--radius) 0; }
 main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 
 /* Filter row */

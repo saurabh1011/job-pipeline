@@ -67,6 +67,7 @@ const App = (() => {
       localStorage.setItem("api_key", key);
       document.getElementById("auth-overlay").style.display = "none";
       loadJobs();
+      _loadGroupSelect();
     } catch {
       document.getElementById("auth-error").style.display = "block";
     }
@@ -387,9 +388,9 @@ const App = (() => {
       analysisEl.innerHTML = "";
     }
 
-    // Description (HTML stripped)
+    // Description (HTML stripped + formatted)
     const descEl = document.getElementById("desc-content");
-    const descText = _stripHtml(job.description || "");
+    const descText = _formatDescription(_stripHtml(job.description || ""));
     descEl.innerHTML = descText
       ? `<div class="job-description">${_esc(descText)}</div>`
       : `<div class="section-empty">No description available.</div>`;
@@ -425,6 +426,7 @@ const App = (() => {
       : `<button class="btn-ghost" onclick="App.exportPDF()">Export PDF</button>`;
     return `
       <select class="status-select" onchange="App.setStatus(this.value)">${opts}</select>
+      <button class="btn-ghost" onclick="App.rescore()">Rescore</button>
       <button class="btn-ghost" onclick="App.regenerate()">Regenerate</button>
       ${pdfBtn}`;
   }
@@ -464,6 +466,13 @@ const App = (() => {
 
   // ── Per-job actions ───────────────────────────────────────────────────────
 
+  async function rescore() {
+    if (!_currentJob) return;
+    const { company, job_id } = _currentJob;
+    const data = await _api("POST", `/api/jobs/${company}/${job_id}/rescore`);
+    _startTask(data.task_id, "Rescoring...", () => openJob(company, job_id));
+  }
+
   async function regenerate() {
     if (!_currentJob) return;
     const { company, job_id } = _currentJob;
@@ -480,35 +489,40 @@ const App = (() => {
 
   // ── Pipeline actions ──────────────────────────────────────────────────────
 
-  async function triggerProcess() {
-    const data = await _api("POST", "/api/pipeline/process");
-    _startTask(data.task_id, "Processing jobs...", loadJobs);
-  }
-
-  async function triggerFullRun() {
-    if (!confirm("Full Run fetches new job listings from all companies. This takes several minutes and uses LLM quota. Continue?")) return;
-    const data = await _api("POST", "/api/pipeline/run");
-    _startTask(data.task_id, "Full run: fetching + scoring + generating...", loadJobs);
-  }
-
   async function triggerRun() {
-    const sel = document.getElementById("company-run-select");
-    const value = sel.value;
-    const isAll = !value;
-    const label = isAll ? "All companies" : value;
-    if (!confirm(`Run fetch + score for: ${label}? This may take several minutes.`)) return;
-    const body = isAll ? {} : { companies: [value] };
+    const actionSel = document.getElementById("action-select");
+    const groupSel  = document.getElementById("group-select");
+    const action    = actionSel.value;
+    const groupVal  = groupSel.value;
+    const actionLabel = actionSel.options[actionSel.selectedIndex].text;
+    const groupLabel  = groupSel.options[groupSel.selectedIndex].text;
+
+    const needsLLM = action !== "source";
+    const warning  = needsLLM ? " Uses LLM quota." : "";
+    if (!confirm(`${actionLabel} for: ${groupLabel}?${warning} This may take several minutes.`)) return;
+
+    const body = { action };
+    if (groupVal.startsWith("c:"))       body.companies = [groupVal.slice(2)];
+    else if (groupVal === "http")        body.group = "http";
+    else if (groupVal === "playwright")  body.group = "playwright";
+
     const data = await _api("POST", "/api/pipeline/run", body);
-    _startTask(data.task_id, `Running: ${label}...`, loadJobs);
+    _startTask(data.task_id, `${actionLabel}: ${groupLabel}...`, loadJobs);
   }
 
-  async function _loadCompanyRunSelect() {
+  async function _loadGroupSelect() {
     try {
       const companies = await _api("GET", "/api/companies");
-      const sel = document.getElementById("company-run-select");
-      sel.innerHTML = `<option value="">All companies</option>` +
-        companies.map(c => `<option value="${_esc(c)}">${_esc(c)}</option>`).join("");
-    } catch (e) { /* non-fatal */ }
+      const sel = document.getElementById("group-select");
+      sel.innerHTML =
+        `<option value="">All</option>` +
+        `<option value="http">HTTP</option>` +
+        `<option value="playwright">Playwright</option>` +
+        `<option disabled>──────────────</option>` +
+        companies.map(c => `<option value="c:${_esc(c)}">${_esc(c)}</option>`).join("");
+    } catch (e) {
+      console.error("Failed to load company list:", e);
+    }
   }
 
   // ── Task progress drawer ──────────────────────────────────────────────────
@@ -594,6 +608,21 @@ const App = (() => {
 
   // ── Utilities ─────────────────────────────────────────────────────────────
 
+  function _formatDescription(text) {
+    if (!text) return "";
+    // Collapse excess blank lines
+    text = text.replace(/\n{3,}/g, "\n\n");
+    // For old blob-format jobs (stored before the _strip_html fix), inject newlines
+    // before common section headers so the wall-of-text becomes readable.
+    if ((text.match(/\n/g) || []).length < 5) {
+      text = text.replace(
+        /\s+(Responsibilities|Requirements?|Qualifications?|About [Yy]ou|About [Tt]he [Rr]ole|What [Yy]ou'?ll|What [Ww]e'?re|Who [Yy]ou|Nice to [Hh]ave|Preferred|Benefits|Minimum Qualifications|Basic Qualifications|Your Impact|What [Ww]e [Oo]ffer|The Role|What [Yy]ou'?ll [Bb]ring)/g,
+        "\n\n$1"
+      );
+    }
+    return text.trim();
+  }
+
   function _stripHtml(html) {
     if (!html) return "";
     const el = document.createElement("div");
@@ -621,7 +650,7 @@ const App = (() => {
       return;
     }
     loadJobs();
-    _loadCompanyRunSelect();
+    _loadGroupSelect();
   }
 
   document.addEventListener("DOMContentLoaded", init);
@@ -642,8 +671,8 @@ const App = (() => {
            setDateFilter,
            openDropdown, ddSearch,
            openJob, closeDetail, showTab,
-           setStatus, bulkStatusFromSelect, regenerate, exportPDF,
-           triggerProcess, triggerFullRun, triggerRun,
+           setStatus, bulkStatusFromSelect, rescore, regenerate, exportPDF,
+           triggerRun,
            closeDrawer, submitApiKey,
            toggleSelectMode, toggleCheck, clearSelection, bulkStatus };
 })();

@@ -13,6 +13,7 @@ Each fetcher.fetch(preferences) returns a list of normalized job dicts:
 """
 import logging
 import re
+import time
 from typing import List, Dict, Any
 
 import requests
@@ -22,10 +23,13 @@ logger = logging.getLogger(__name__)
 
 
 def _strip_html(html: str) -> str:
-    """Remove HTML tags and normalize whitespace."""
+    """Remove HTML tags, preserving block-level structure as newlines."""
     soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text(separator=" ")
-    return re.sub(r"\s+", " ", text).strip()
+    text = soup.get_text(separator="\n")
+    lines = [line.strip() for line in text.split("\n")]
+    text = "\n".join(lines)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _matches_title(title: str, preferences: dict) -> bool:
@@ -762,20 +766,28 @@ class LeverFetcher:
     """Fetches jobs from Lever ATS public API.
 
     API: GET https://api.lever.co/v0/postings/{slug}?mode=json&limit=100
+    Supports optional department filter to work around Lever's hard 100-result cap:
+    large boards (e.g. Spotify) cap at 100 results with no working pagination,
+    so filtering by department=Engineering surfaces EM roles that would otherwise
+    be crowded out.
     Description is available inline in the listing response.
     """
 
     _BASE_URL = "https://api.lever.co/v0/postings/{slug}"
 
-    def __init__(self, board_slug: str, company_name: str):
+    def __init__(self, board_slug: str, company_name: str, department: str = None):
         self.board_slug = board_slug
         self.company_name = company_name
+        self.department = department
 
     def fetch(self, preferences: dict) -> List[dict]:
+        params = {"mode": "json", "limit": 100}
+        if self.department:
+            params["department"] = self.department
         try:
             resp = requests.get(
                 self._BASE_URL.format(slug=self.board_slug),
-                params={"mode": "json", "limit": 100},
+                params=params,
                 timeout=15,
             )
             resp.raise_for_status()
@@ -933,7 +945,7 @@ _FETCHER_MAP = {
 _PLAYWRIGHT_ATS = {"google", "apple", "meta", "walmart"}
 
 
-def fetch_all_companies(companies_config: List[dict], preferences: dict) -> List[dict]:
+def fetch_all_companies(companies_config: List[dict], preferences: dict, log=None) -> List[dict]:
     """Run all company fetchers and return aggregated job list.
 
     Input:
@@ -946,47 +958,72 @@ def fetch_all_companies(companies_config: List[dict], preferences: dict) -> List
     http_companies = [c for c in companies_config if c.get("ats", "greenhouse") not in _PLAYWRIGHT_ATS]
     playwright_companies = [c for c in companies_config if c.get("ats") in _PLAYWRIGHT_ATS]
 
+    _log = log or (lambda msg: logger.info(msg))
     all_jobs = []
+    http_total = len(http_companies)
 
-    for company in http_companies:
+    for i, company in enumerate(http_companies, 1):
+        name = company.get("name", "?")
         ats = company.get("ats", "greenhouse")
         fetcher_cls = _FETCHER_MAP.get(ats)
         if fetcher_cls is None:
-            logger.warning("No fetcher for ATS type '%s' (company: %s)", ats, company.get("name"))
+            _log(f"[{i}/{http_total}] SKIP {name} — no fetcher for ATS '{ats}'")
             continue
-        if ats in ("greenhouse", "ashby", "lever"):
-            fetcher = fetcher_cls(board_slug=company["board_slug"], company_name=company["name"])
+        if ats == "lever":
+            fetcher = fetcher_cls(board_slug=company["board_slug"], company_name=name,
+                                  department=company.get("department"))
+        elif ats in ("greenhouse", "ashby"):
+            fetcher = fetcher_cls(board_slug=company["board_slug"], company_name=name)
         elif ats == "linkedin":
-            fetcher = fetcher_cls(company_name=company["name"], company_id=company.get("company_id", ""))
+            fetcher = fetcher_cls(company_name=name, company_id=company.get("company_id", ""))
         else:
-            fetcher = fetcher_cls(company_name=company["name"])
-        all_jobs.extend(fetcher.fetch(preferences))
+            fetcher = fetcher_cls(company_name=name)
+        _log(f"[{i}/{http_total}] Fetching {name} ({ats})...")
+        t0 = time.time()
+        try:
+            jobs = fetcher.fetch(preferences)
+        except Exception as exc:
+            _log(f"  ERROR: {exc}")
+            jobs = []
+        elapsed = time.time() - t0
+        _log(f"  → {len(jobs)} matching jobs ({elapsed:.1f}s)")
+        all_jobs.extend(jobs)
 
     if playwright_companies:
         from playwright.sync_api import sync_playwright
         from pipeline.playwright_fetcher import _PLAYWRIGHT_FETCHER_MAP
 
+        _log = log or (lambda msg: logger.info(msg))
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            try:
-                for company in playwright_companies:
-                    ats = company.get("ats")
-                    fetcher_cls = _PLAYWRIGHT_FETCHER_MAP.get(ats)
-                    if fetcher_cls is None:
-                        logger.warning("No Playwright fetcher for ATS '%s' (company: %s)",
-                                       ats, company.get("name"))
-                        continue
-                    fetcher = fetcher_cls(company_name=company["name"])
+            for company in playwright_companies:
+                ats = company.get("ats")
+                fetcher_cls = _PLAYWRIGHT_FETCHER_MAP.get(ats)
+                if fetcher_cls is None:
+                    logger.warning("No Playwright fetcher for ATS '%s' (company: %s)",
+                                   ats, company.get("name"))
+                    continue
+                fetcher = fetcher_cls(company_name=company["name"])
+                # Launch a fresh browser per company so memory is freed between runs.
+                browser = pw.chromium.launch(headless=True)
+                try:
                     page = browser.new_page(user_agent=(
                         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                     ))
                     try:
-                        jobs = fetcher.fetch(preferences, page)
+                        jobs = fetcher.fetch(preferences, page, log=log)
                         all_jobs.extend(jobs)
                     finally:
                         page.close()
-            finally:
-                browser.close()
+                finally:
+                    browser.close()
+                    try:
+                        import resource as _resource
+                        rss = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+                        import platform
+                        rss_mb = rss / 1024 if platform.system() == "Darwin" else rss / 1024 / 1024
+                        _log(f"[mem] After {company['name']}: {rss_mb:.0f} MB RSS")
+                    except Exception:
+                        pass
 
     return all_jobs
