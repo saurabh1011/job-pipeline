@@ -34,6 +34,17 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(PROFILE_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
 
+# Sync versioned config files from the image into the volume on every startup.
+# The volume owns jobs.db/output/profile (mutable state); config files are
+# versioned in the image and must stay current after deploys.
+_IMAGE_CONFIG = ROOT / "config"
+for _cfg_file in ["companies.yaml", "preferences.yaml"]:
+    _src = _IMAGE_CONFIG / _cfg_file
+    _dst = Path(CONFIG_DIR) / _cfg_file
+    if _src.exists() and _src != _dst:
+        import shutil as _shutil
+        _shutil.copy2(str(_src), str(_dst))
+
 app = FastAPI(title="Job Application Pipeline", version="1.0.0")
 
 
