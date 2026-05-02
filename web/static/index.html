@@ -125,6 +125,7 @@
   <div class="settings-tabs">
     <button class="settings-tab active" data-tab="companies" onclick="App.settingsTab('companies')">Companies</button>
     <button class="settings-tab" data-tab="preferences" onclick="App.settingsTab('preferences')">Preferences</button>
+    <button class="settings-tab" data-tab="runs" onclick="App.settingsTab('runs')">Run History</button>
   </div>
 
   <!-- Companies tab -->
@@ -207,6 +208,11 @@
       <button id="save-prefs-btn" class="btn-primary" style="width:100%" onclick="App.savePreferences()">Save Preferences</button>
     </div>
   </div>
+
+  <!-- Run History tab -->
+  <div id="settings-tab-runs" class="settings-body" style="display:none">
+    <div id="runs-list"><div class="settings-empty">Loading...</div></div>
+  </div>
 </div>
 
 <!-- Task progress drawer -->
@@ -218,6 +224,6 @@
   <div id="task-log"></div>
 </div>
 
-<script src="/static/app.js?v=6"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>

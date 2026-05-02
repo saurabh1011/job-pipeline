@@ -220,6 +220,23 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .auth-box input { width: 100%; padding: 9px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 14px; margin-bottom: 12px; }
 .auth-box input:focus { outline: 1px solid var(--accent); }
 
+/* Run history table */
+.runs-scroll { overflow-x: auto; }
+.runs-table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+.runs-table th { text-align: left; padding: 6px 10px; color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid var(--border); }
+.runs-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); color: var(--text); vertical-align: middle; }
+.runs-table tbody tr:last-child td { border-bottom: none; }
+.runs-table tbody tr:hover { background: var(--surface2); }
+.run-when { color: var(--text); font-size: 12px; }
+.run-time { color: var(--text-muted); font-size: 11px; }
+.run-num { text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.run-dur { color: var(--text-muted); }
+.run-badge { display: inline-block; padding: 2px 7px; border-radius: 20px; font-size: 11px; font-weight: 500; background: var(--surface2); border: 1px solid var(--border); color: var(--text); }
+.run-group-badge { color: var(--accent); border-color: var(--accent); }
+.run-status-done { color: var(--green); font-weight: 500; }
+.run-status-error { color: var(--red); font-weight: 500; cursor: help; }
+.run-status-running { color: var(--accent); font-weight: 500; }
+
 /* Empty state */
 .empty { text-align: center; padding: 60px 20px; color: var(--text-muted); font-size: 14px; }
 

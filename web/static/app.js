@@ -579,11 +579,76 @@ const App = (() => {
   }
 
   function settingsTab(tab) {
-    ["companies", "preferences"].forEach(t => {
+    ["companies", "preferences", "runs"].forEach(t => {
       document.getElementById(`settings-tab-${t}`).style.display = t === tab ? "" : "none";
       const btn = document.querySelector(`.settings-tab[data-tab="${t}"]`);
       if (btn) btn.classList.toggle("active", t === tab);
     });
+    if (tab === "runs") _loadRunsTab();
+  }
+
+  async function _loadRunsTab() {
+    const el = document.getElementById("runs-list");
+    el.innerHTML = '<div class="settings-empty">Loading...</div>';
+    try {
+      const runs = await _api("GET", "/api/runs?limit=30");
+      _renderRunsTable(runs);
+    } catch (e) {
+      el.innerHTML = '<div class="settings-empty">Failed to load run history.</div>';
+    }
+  }
+
+  function _fmtDuration(start, end) {
+    const s = Math.round((new Date(end) - new Date(start)) / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60), r = s % 60;
+    return r > 0 ? `${m}m ${r}s` : `${m}m`;
+  }
+
+  function _renderRunsTable(runs) {
+    const el = document.getElementById("runs-list");
+    if (!runs.length) {
+      el.innerHTML = '<div class="settings-empty">No runs recorded yet. Run the pipeline to see history here.</div>';
+      return;
+    }
+    const ACTION_LABELS = {
+      source_and_score: "Source+Score", source: "Source",
+      score: "Score", rescore: "Rescore",
+    };
+    const rows = runs.map(r => {
+      const dt = new Date(r.started_at);
+      const dateStr = dt.toLocaleDateString([], {month: "short", day: "numeric"});
+      const timeStr = dt.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+      const dur = r.ended_at ? _fmtDuration(r.started_at, r.ended_at) : "—";
+      const statusCls = r.status === "done" ? "run-status-done"
+                      : r.status === "error" ? "run-status-error"
+                      : "run-status-running";
+      const statusLabel = r.status === "error" && r.error_msg
+        ? `<span class="${statusCls}" title="${_esc(r.error_msg)}">error ⚠</span>`
+        : `<span class="${statusCls}">${r.status}</span>`;
+      return `<tr>
+        <td class="run-when">${dateStr}<br><span class="run-time">${timeStr}</span></td>
+        <td><span class="run-badge">${_esc(ACTION_LABELS[r.action] || r.action)}</span></td>
+        <td><span class="run-badge run-group-badge">${_esc(r.group_type)}</span></td>
+        <td class="run-num">${r.companies_count}</td>
+        <td class="run-num">${r.jobs_fetched}</td>
+        <td class="run-num">${r.jobs_new}</td>
+        <td class="run-num">${r.jobs_scored}</td>
+        <td class="run-num run-dur">${dur}</td>
+        <td>${statusLabel}</td>
+      </tr>`;
+    }).join("");
+    el.innerHTML = `<div class="runs-scroll"><table class="runs-table">
+      <thead><tr>
+        <th>When</th><th>Action</th><th>Group</th>
+        <th title="Companies targeted">Cos</th>
+        <th title="Jobs fetched from ATS">Fetched</th>
+        <th title="New (not seen before)">New</th>
+        <th title="Scored this run">Scored</th>
+        <th>Duration</th><th>Status</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
   }
 
   // ── Settings: companies ────────────────────────────────────────────────────
@@ -906,5 +971,6 @@ const App = (() => {
            toggleSelectMode, toggleCheck, clearSelection, bulkStatus,
            openSettings, closeSettings, settingsTab,
            removeCompany, detectAts, addCompany,
-           removeChip, chipKeydown, savePreferences };
+           removeChip, chipKeydown, savePreferences,
+           _loadRunsTab };
 })();

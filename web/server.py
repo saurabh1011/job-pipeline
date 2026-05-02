@@ -301,6 +301,7 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
     prefs = _load_prefs()
     companies = _resolve_companies(all_companies_cfg, group, company_filter)
     company_names = {c["name"] for c in companies}
+    group_label = group or "all"
     threshold = prefs.get("match_threshold", 7)
     provider = create_provider(prefs)
     gen = ContentGenerator(provider=provider, output_dir=OUTPUT_DIR)
@@ -308,52 +309,77 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
                            google_docs_links=prefs.get("google_docs_links", []),
                            provider=provider)
 
+    # Record run start
+    _run_store = JobStore(DB_PATH)
+    run_id = _run_store.start_run(action, group_label, len(companies))
+    _run_store.close()
+
     fetched_all = []
     new_jobs = []
+    scored = 0
+    generated = 0
+    _run_error = None
 
-    # ── Fetch phase ──────────────────────────────────────────────────────────
-    if action in ("source", "source_and_score"):
-        group_label = group or "all"
-        log(f"Fetching from {len(companies)} companies ({group_label})...")
-        uses_playwright = any(c.get("ats") in _PLAYWRIGHT_ATS for c in companies)
-        if uses_playwright:
-            log("Launching browser (Playwright) — this may take several minutes...")
-        fetched_all = fetch_all_companies(companies, prefs, log=log)
-        store = JobStore(DB_PATH)
-        for job in fetched_all:
-            if store.upsert_job(job):
-                new_jobs.append(job)
-        store.close()
-        log(f"Fetched {len(fetched_all)} matching jobs, {len(new_jobs)} new")
-        if action == "source":
-            log(f"\nDone. Fetched: {len(fetched_all)}  New: {len(new_jobs)}")
+    try:
+        # ── Fetch phase ──────────────────────────────────────────────────────
+        if action in ("source", "source_and_score"):
+            log(f"Fetching from {len(companies)} companies ({group_label})...")
+            uses_playwright = any(c.get("ats") in _PLAYWRIGHT_ATS for c in companies)
+            if uses_playwright:
+                log("Launching browser (Playwright) — this may take several minutes...")
+            fetched_all = fetch_all_companies(companies, prefs, log=log)
+            store = JobStore(DB_PATH)
+            for job in fetched_all:
+                if store.upsert_job(job):
+                    new_jobs.append(job)
+            store.close()
+            log(f"Fetched {len(fetched_all)} matching jobs, {len(new_jobs)} new")
+            if action == "source":
+                log(f"\nDone. Fetched: {len(fetched_all)}  New: {len(new_jobs)}")
+                return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": 0, "generated": 0}
+
+        # ── Determine jobs to score ───────────────────────────────────────────
+        if action == "source_and_score":
+            jobs_to_score = new_jobs
+            log(f"{len(jobs_to_score)} new job(s) to score.")
+        else:
+            store = JobStore(DB_PATH)
+            all_db_jobs = store.list_all_jobs()
+            store.close()
+            if action == "score":
+                jobs_to_score = [j for j in all_db_jobs
+                                 if j.get("match_score") is None
+                                 and (not company_names or j["company"] in company_names)]
+                log(f"{len(jobs_to_score)} unscored job(s) for selected companies.")
+            else:  # rescore
+                jobs_to_score = [j for j in all_db_jobs
+                                 if not company_names or j["company"] in company_names]
+                log(f"Force-rescoring {len(jobs_to_score)} job(s) for selected companies.")
+
+        if not jobs_to_score:
+            log("Nothing to score.")
             return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": 0, "generated": 0}
 
-    # ── Determine jobs to score ───────────────────────────────────────────────
-    if action == "source_and_score":
-        jobs_to_score = new_jobs
-        log(f"{len(jobs_to_score)} new job(s) to score.")
-    else:
-        store = JobStore(DB_PATH)
-        all_db_jobs = store.list_all_jobs()
-        store.close()
-        if action == "score":
-            jobs_to_score = [j for j in all_db_jobs
-                             if j.get("match_score") is None
-                             and (not company_names or j["company"] in company_names)]
-            log(f"{len(jobs_to_score)} unscored job(s) for selected companies.")
-        else:  # rescore
-            jobs_to_score = [j for j in all_db_jobs
-                             if not company_names or j["company"] in company_names]
-            log(f"Force-rescoring {len(jobs_to_score)} job(s) for selected companies.")
+        scored, generated = _score_job_list(log, jobs_to_score, prefs, provider, threshold, gen, loader)
+        log(f"\nDone. Fetched: {len(fetched_all)}  New: {len(new_jobs)}  Scored: {scored}  Generated: {generated}")
+        return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": scored, "generated": generated}
 
-    if not jobs_to_score:
-        log("Nothing to score.")
-        return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": 0, "generated": 0}
+    except Exception as exc:
+        _run_error = str(exc)
+        raise
 
-    scored, generated = _score_job_list(log, jobs_to_score, prefs, provider, threshold, gen, loader)
-    log(f"\nDone. Fetched: {len(fetched_all)}  New: {len(new_jobs)}  Scored: {scored}  Generated: {generated}")
-    return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": scored, "generated": generated}
+    finally:
+        _fin_store = JobStore(DB_PATH)
+        _fin_store.finish_run(
+            run_id,
+            jobs_fetched=len(fetched_all),
+            jobs_new=len(new_jobs),
+            jobs_scored=scored,
+            jobs_generated=generated,
+            status="error" if _run_error else "done",
+            error_msg=_run_error,
+        )
+        _fin_store.close()
 
 
 def _do_rescore_job(log, company: str, job_id: str):
@@ -519,6 +545,16 @@ def pipeline_run(body: RunRequest = RunRequest(), _=Depends(require_api_key)):
     """Run a pipeline action for selected companies."""
     task_id = create_task(_do_run, body.group, body.companies or None, body.action)
     return {"task_id": task_id}
+
+
+@app.get("/api/runs")
+def list_runs(limit: int = 20, _=Depends(require_api_key)):
+    """Return recent pipeline run records, newest first."""
+    store = JobStore(DB_PATH)
+    try:
+        return store.list_runs(limit)
+    finally:
+        store.close()
 
 
 def _do_analyze_job(log, company: str, job_id: str):

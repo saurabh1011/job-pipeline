@@ -230,6 +230,59 @@ class TestTaskEndpoints:
         assert r.status_code == 404
 
 
+# ── GET /api/runs ─────────────────────────────────────────────────────────────
+
+class TestListRuns:
+    def test_empty_returns_empty_list(self, client):
+        r = client.get("/api/runs")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_returns_run_records(self, client, db_path):
+        from pipeline.store import JobStore
+        store = JobStore(db_path)
+        run_id = store.start_run("source_and_score", "all", 5)
+        store.finish_run(run_id, jobs_fetched=20, jobs_new=5, jobs_scored=5)
+        store.close()
+        r = client.get("/api/runs")
+        assert r.status_code == 200
+        runs = r.json()
+        assert len(runs) == 1
+        assert runs[0]["action"] == "source_and_score"
+        assert runs[0]["jobs_fetched"] == 20
+        assert runs[0]["status"] == "done"
+
+    def test_newest_first(self, client, db_path):
+        from pipeline.store import JobStore
+        store = JobStore(db_path)
+        id1 = store.start_run("source", "http", 3)
+        id2 = store.start_run("score", "all", 5)
+        store.close()
+        r = client.get("/api/runs")
+        runs = r.json()
+        assert runs[0]["id"] == id2
+
+    def test_limit_param(self, client, db_path):
+        from pipeline.store import JobStore
+        store = JobStore(db_path)
+        for _ in range(5):
+            store.start_run("source", "all", 1)
+        store.close()
+        r = client.get("/api/runs?limit=2")
+        assert len(r.json()) == 2
+
+    def test_error_run_included(self, client, db_path):
+        from pipeline.store import JobStore
+        store = JobStore(db_path)
+        run_id = store.start_run("rescore", "all", 2)
+        store.finish_run(run_id, status="error", error_msg="boom")
+        store.close()
+        r = client.get("/api/runs")
+        run = r.json()[0]
+        assert run["status"] == "error"
+        assert run["error_msg"] == "boom"
+
+
 # ── Auth enforcement ──────────────────────────────────────────────────────────
 
 class TestAuthEnforcement:

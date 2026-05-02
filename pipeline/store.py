@@ -41,6 +41,23 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 """
 
+_RUNS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at      TEXT NOT NULL,
+    ended_at        TEXT,
+    action          TEXT NOT NULL DEFAULT '',
+    group_type      TEXT NOT NULL DEFAULT 'all',
+    companies_count INTEGER NOT NULL DEFAULT 0,
+    jobs_fetched    INTEGER NOT NULL DEFAULT 0,
+    jobs_new        INTEGER NOT NULL DEFAULT 0,
+    jobs_scored     INTEGER NOT NULL DEFAULT 0,
+    jobs_generated  INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'running',
+    error_msg       TEXT
+);
+"""
+
 _MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN score_attempted INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE jobs ADD COLUMN match_strengths TEXT",
@@ -56,6 +73,7 @@ class JobStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.executescript(_SCHEMA)
+        self._conn.executescript(_RUNS_SCHEMA)
         self._apply_migrations()
         self._conn.commit()
 
@@ -144,6 +162,44 @@ class JobStore:
             ),
         )
         self._conn.commit()
+
+    def start_run(self, action: str, group_type: str, companies_count: int) -> int:
+        """Insert a new run record with status=running. Returns the run id."""
+        now = datetime.now(timezone.utc).isoformat()
+        cur = self._conn.execute(
+            """INSERT INTO pipeline_runs (started_at, action, group_type, companies_count, status)
+               VALUES (?, ?, ?, ?, 'running')""",
+            (now, action, group_type, companies_count),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    def finish_run(
+        self,
+        run_id: int,
+        jobs_fetched: int = 0,
+        jobs_new: int = 0,
+        jobs_scored: int = 0,
+        jobs_generated: int = 0,
+        status: str = "done",
+        error_msg: Optional[str] = None,
+    ):
+        """Update run record with final stats and status."""
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            """UPDATE pipeline_runs
+               SET ended_at = ?, jobs_fetched = ?, jobs_new = ?, jobs_scored = ?,
+                   jobs_generated = ?, status = ?, error_msg = ?
+               WHERE id = ?""",
+            (now, jobs_fetched, jobs_new, jobs_scored, jobs_generated, status, error_msg, run_id),
+        )
+        self._conn.commit()
+
+    def list_runs(self, limit: int = 20) -> List[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM pipeline_runs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_jobs_by_status(self, status: str) -> List[dict]:
         rows = self._conn.execute(

@@ -118,6 +118,80 @@ class TestQueries:
         assert len(all_jobs) == 2
 
 
+class TestPipelineRuns:
+    def test_start_run_returns_int_id(self, store):
+        run_id = store.start_run("source_and_score", "all", 5)
+        assert isinstance(run_id, int)
+        assert run_id > 0
+
+    def test_start_run_creates_running_record(self, store):
+        run_id = store.start_run("source", "http", 10)
+        runs = store.list_runs()
+        assert len(runs) == 1
+        assert runs[0]["id"] == run_id
+        assert runs[0]["status"] == "running"
+        assert runs[0]["action"] == "source"
+        assert runs[0]["group_type"] == "http"
+        assert runs[0]["companies_count"] == 10
+
+    def test_start_run_records_started_at(self, store):
+        store.start_run("score", "all", 3)
+        runs = store.list_runs()
+        assert runs[0]["started_at"] is not None
+
+    def test_finish_run_sets_done_status(self, store):
+        run_id = store.start_run("source_and_score", "all", 5)
+        store.finish_run(run_id, jobs_fetched=20, jobs_new=5, jobs_scored=5, jobs_generated=2)
+        runs = store.list_runs()
+        assert runs[0]["status"] == "done"
+
+    def test_finish_run_stores_stats(self, store):
+        run_id = store.start_run("source_and_score", "all", 5)
+        store.finish_run(run_id, jobs_fetched=30, jobs_new=8, jobs_scored=8, jobs_generated=3)
+        run = store.list_runs()[0]
+        assert run["jobs_fetched"] == 30
+        assert run["jobs_new"] == 8
+        assert run["jobs_scored"] == 8
+        assert run["jobs_generated"] == 3
+
+    def test_finish_run_sets_ended_at(self, store):
+        run_id = store.start_run("score", "playwright", 4)
+        store.finish_run(run_id)
+        run = store.list_runs()[0]
+        assert run["ended_at"] is not None
+
+    def test_finish_run_error_status(self, store):
+        run_id = store.start_run("rescore", "all", 2)
+        store.finish_run(run_id, status="error", error_msg="Connection timeout")
+        run = store.list_runs()[0]
+        assert run["status"] == "error"
+        assert run["error_msg"] == "Connection timeout"
+
+    def test_list_runs_newest_first(self, store):
+        id1 = store.start_run("source", "all", 1)
+        id2 = store.start_run("score", "all", 1)
+        runs = store.list_runs()
+        assert runs[0]["id"] == id2
+        assert runs[1]["id"] == id1
+
+    def test_list_runs_respects_limit(self, store):
+        for i in range(5):
+            store.start_run("source", "all", i)
+        assert len(store.list_runs(limit=3)) == 3
+
+    def test_list_runs_empty(self, store):
+        assert store.list_runs() == []
+
+    def test_multiple_runs_independent(self, store):
+        id1 = store.start_run("source", "http", 10)
+        id2 = store.start_run("score", "playwright", 4)
+        store.finish_run(id1, jobs_fetched=50, jobs_new=10)
+        store.finish_run(id2, jobs_fetched=0, jobs_scored=4)
+        runs = {r["id"]: r for r in store.list_runs()}
+        assert runs[id1]["jobs_fetched"] == 50
+        assert runs[id2]["jobs_scored"] == 4
+
+
 class TestSetAnalysis:
     def test_set_and_retrieve_requirements(self, store):
         store.upsert_job(make_job())
