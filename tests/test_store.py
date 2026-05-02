@@ -116,3 +116,62 @@ class TestQueries:
         store.upsert_job(make_job(job_id="b"))
         all_jobs = store.list_all_jobs()
         assert len(all_jobs) == 2
+
+
+class TestSetAnalysis:
+    def test_set_and_retrieve_requirements(self, store):
+        store.upsert_job(make_job())
+        reqs = [
+            {"requirement": "Lead a team", "fit": "Strong", "evidence": "Led 10 engineers", "resume_suggestion": None},
+            {"requirement": "Own roadmap", "fit": "Partial", "evidence": "Contributed to roadmap", "resume_suggestion": "Add roadmap ownership"},
+        ]
+        suggestions = ["Add metrics to bullets", "Highlight roadmap ownership"]
+        store.set_analysis("Acme", "123", reqs, suggestions)
+        job = store.get_job("Acme", "123")
+        assert job["match_requirements"] is not None
+        assert job["match_resume_suggestions"] is not None
+
+    def test_requirements_stored_as_json(self, store):
+        import json
+        store.upsert_job(make_job())
+        reqs = [{"requirement": "Build systems", "fit": "Strong", "evidence": "Built X", "resume_suggestion": None}]
+        store.set_analysis("Acme", "123", reqs, [])
+        job = store.get_job("Acme", "123")
+        parsed = json.loads(job["match_requirements"])
+        assert parsed[0]["requirement"] == "Build systems"
+        assert parsed[0]["fit"] == "Strong"
+
+    def test_resume_suggestions_stored_as_json(self, store):
+        import json
+        store.upsert_job(make_job())
+        suggestions = ["Highlight EM experience", "Add scope metrics"]
+        store.set_analysis("Acme", "123", [], suggestions)
+        job = store.get_job("Acme", "123")
+        parsed = json.loads(job["match_resume_suggestions"])
+        assert parsed == suggestions
+
+    def test_set_analysis_empty_lists(self, store):
+        import json
+        store.upsert_job(make_job())
+        store.set_analysis("Acme", "123", [], [])
+        job = store.get_job("Acme", "123")
+        assert json.loads(job["match_requirements"]) == []
+        assert json.loads(job["match_resume_suggestions"]) == []
+
+    def test_set_analysis_overwrites_previous(self, store):
+        import json
+        store.upsert_job(make_job())
+        store.set_analysis("Acme", "123", [{"requirement": "Old", "fit": "Gap", "evidence": "e", "resume_suggestion": None}], [])
+        store.set_analysis("Acme", "123", [{"requirement": "New", "fit": "Strong", "evidence": "e", "resume_suggestion": None}], ["new tip"])
+        job = store.get_job("Acme", "123")
+        reqs = json.loads(job["match_requirements"])
+        assert reqs[0]["requirement"] == "New"
+        assert json.loads(job["match_resume_suggestions"]) == ["new tip"]
+
+    def test_columns_exist_on_fresh_store(self, store):
+        store.upsert_job(make_job())
+        job = store.get_job("Acme", "123")
+        assert "match_requirements" in job
+        assert "match_resume_suggestions" in job
+        assert job["match_requirements"] is None
+        assert job["match_resume_suggestions"] is None

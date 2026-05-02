@@ -83,8 +83,6 @@ class GeminiProvider(LLMProvider):
     QUALITY_MODEL = "models/gemini-3.1-flash-lite-preview"
     FAST_MODEL = "models/gemini-3.1-flash-lite-preview"
 
-    # 8s between calls = 7.5 RPM — safely under 20 RPM free tier limit
-    _RATE_LIMIT_DELAY = 8
     _MAX_RETRIES = 3
 
     def __init__(self, api_key: str):
@@ -108,7 +106,6 @@ class GeminiProvider(LLMProvider):
         config = _genai_types.GenerateContentConfig(max_output_tokens=max_tokens)
         for attempt in range(self._MAX_RETRIES):
             try:
-                time.sleep(self._RATE_LIMIT_DELAY)
                 response = self._client.models.generate_content(
                     model=model,
                     contents=prompt,

@@ -45,6 +45,8 @@ _MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN score_attempted INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE jobs ADD COLUMN match_strengths TEXT",
     "ALTER TABLE jobs ADD COLUMN match_gaps TEXT",
+    "ALTER TABLE jobs ADD COLUMN match_requirements TEXT",
+    "ALTER TABLE jobs ADD COLUMN match_resume_suggestions TEXT",
 ]
 
 
@@ -117,6 +119,26 @@ class JobStore:
                 summary,
                 json.dumps(strengths or []),
                 json.dumps(gaps or []),
+                company,
+                job_id,
+            ),
+        )
+        self._conn.commit()
+
+    def set_analysis(
+        self,
+        company: str,
+        job_id: str,
+        requirements: list,
+        resume_suggestions: list,
+    ):
+        self._conn.execute(
+            """UPDATE jobs
+               SET match_requirements = ?, match_resume_suggestions = ?
+               WHERE company = ? AND job_id = ?""",
+            (
+                json.dumps(requirements),
+                json.dumps(resume_suggestions),
                 company,
                 job_id,
             ),

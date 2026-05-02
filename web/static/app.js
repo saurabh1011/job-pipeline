@@ -374,16 +374,21 @@ const App = (() => {
 
     document.getElementById("action-bar").innerHTML = _actionBar(job);
 
-    // Match analysis (summary + strengths + gaps)
+    // Match analysis (summary + strengths + gaps + deep analysis if available)
     const analysisEl = document.getElementById("match-analysis");
-    if (job.match_summary || (job.match_strengths && job.match_strengths.length) || (job.match_gaps && job.match_gaps.length)) {
+    const hasBasic = job.match_summary || (job.match_strengths && job.match_strengths.length) || (job.match_gaps && job.match_gaps.length);
+    const hasDeep  = job.match_requirements && job.match_requirements.length;
+    if (hasBasic || hasDeep) {
       const summaryHtml = job.match_summary
         ? `<div class="match-section"><div class="match-section-title">Match Summary</div><p class="match-summary">${_esc(job.match_summary)}</p></div>` : "";
       const strengthsHtml = (job.match_strengths && job.match_strengths.length)
         ? `<div class="match-section"><div class="match-section-title strengths-label">Strengths</div><ul class="match-list strengths-list">${job.match_strengths.map(s => `<li>${_esc(s)}</li>`).join("")}</ul></div>` : "";
       const gapsHtml = (job.match_gaps && job.match_gaps.length)
         ? `<div class="match-section"><div class="match-section-title gaps-label">Gaps</div><ul class="match-list gaps-list">${job.match_gaps.map(g => `<li>${_esc(g)}</li>`).join("")}</ul></div>` : "";
-      analysisEl.innerHTML = `<div class="match-analysis-box">${summaryHtml}${strengthsHtml}${gapsHtml}</div>`;
+      const reqHtml  = hasDeep ? _renderRequirements(job.match_requirements) : "";
+      const suggHtml = (job.match_resume_suggestions && job.match_resume_suggestions.length)
+        ? `<div class="match-section"><div class="match-section-title">Resume Suggestions</div><ul class="match-list">${job.match_resume_suggestions.map(s => `<li>${_esc(s)}</li>`).join("")}</ul></div>` : "";
+      analysisEl.innerHTML = `<div class="match-analysis-box">${summaryHtml}${strengthsHtml}${gapsHtml}${reqHtml}${suggHtml}</div>`;
     } else {
       analysisEl.innerHTML = "";
     }
@@ -424,9 +429,12 @@ const App = (() => {
     const pdfBtn = job.pdf_path
       ? `<a href="${job.pdf_path}" target="_blank"><button class="btn-ghost">Download PDF</button></a>`
       : `<button class="btn-ghost" onclick="App.exportPDF()">Export PDF</button>`;
+    const analyzeLabel = (job.match_requirements && job.match_requirements.length)
+      ? "Re-analyze" : "Deep Analysis";
     return `
       <select class="status-select" onchange="App.setStatus(this.value)">${opts}</select>
       <button class="btn-ghost" onclick="App.rescore()">Rescore</button>
+      <button class="btn-ghost" onclick="App.analyze()">${_esc(analyzeLabel)}</button>
       <button class="btn-ghost" onclick="App.regenerate()">Regenerate</button>
       ${pdfBtn}`;
   }
@@ -471,6 +479,13 @@ const App = (() => {
     const { company, job_id } = _currentJob;
     const data = await _api("POST", `/api/jobs/${company}/${job_id}/rescore`);
     _startTask(data.task_id, "Rescoring...", () => openJob(company, job_id));
+  }
+
+  async function analyze() {
+    if (!_currentJob) return;
+    const { company, job_id } = _currentJob;
+    const data = await _api("POST", `/api/jobs/${company}/${job_id}/analyze`);
+    _startTask(data.task_id, "Deep analysis...", () => openJob(company, job_id));
   }
 
   async function regenerate() {
@@ -790,28 +805,58 @@ const App = (() => {
     }).join("");
   }
 
+  // ── Requirements breakdown renderer ──────────────────────────────────────
+
+  function _renderRequirements(requirements) {
+    if (!requirements || !requirements.length) return "";
+    const rows = requirements.map(r => {
+      const fit = r.fit || "Partial";
+      const cls = fit === "Strong" ? "fit-strong" : fit === "Gap" ? "fit-gap" : "fit-partial";
+      const suggestion = r.resume_suggestion
+        ? `<div class="req-suggestion">${_esc(r.resume_suggestion)}</div>` : "";
+      return `
+        <div class="req-row">
+          <span class="fit-badge ${cls}">${_esc(fit)}</span>
+          <div class="req-body">
+            <div class="req-text">${_esc(r.requirement || r.text || "")}</div>
+            <div class="req-evidence">${_esc(r.evidence || "")}</div>
+            ${suggestion}
+          </div>
+        </div>`;
+    }).join("");
+    return `<div class="match-section">
+      <div class="match-section-title">Requirements Breakdown</div>
+      <div class="req-list">${rows}</div>
+    </div>`;
+  }
+
   // ── Utilities ─────────────────────────────────────────────────────────────
 
   function _formatDescription(text) {
     if (!text) return "";
+    // Convert inline bullet characters to newline + dash
+    text = text.replace(/([^\n])\s*[•·◦‣▪▸]\s*/g, "$1\n- ");
+    // Ensure section headers start on their own line
+    text = text.replace(
+      /([^\n])\s*(Responsibilities|Requirements?|Qualifications?|About [Yy]ou|About [Tt]he [Rr]ole|What [Yy]ou'?ll|What [Ww]e'?re|Who [Yy]ou|Nice to [Hh]ave|Preferred|Benefits|Minimum Qualifications|Basic Qualifications|Your Impact|What [Ww]e [Oo]ffer|The Role|What [Yy]ou'?ll [Bb]ring)/g,
+      "$1\n\n$2"
+    );
     // Collapse excess blank lines
     text = text.replace(/\n{3,}/g, "\n\n");
-    // For old blob-format jobs (stored before the _strip_html fix), inject newlines
-    // before common section headers so the wall-of-text becomes readable.
-    if ((text.match(/\n/g) || []).length < 5) {
-      text = text.replace(
-        /\s+(Responsibilities|Requirements?|Qualifications?|About [Yy]ou|About [Tt]he [Rr]ole|What [Yy]ou'?ll|What [Ww]e'?re|Who [Yy]ou|Nice to [Hh]ave|Preferred|Benefits|Minimum Qualifications|Basic Qualifications|Your Impact|What [Ww]e [Oo]ffer|The Role|What [Yy]ou'?ll [Bb]ring)/g,
-        "\n\n$1"
-      );
-    }
     return text.trim();
   }
 
   function _stripHtml(html) {
     if (!html) return "";
+    // Plain text (no HTML tags) — return as-is so newlines are preserved
+    if (!/<[a-z]/i.test(html)) return html;
     const el = document.createElement("div");
     el.innerHTML = html;
-    return (el.textContent || el.innerText || "").replace(/\s+/g, " ").trim();
+    // innerText preserves block-level newlines; textContent does not
+    return (el.innerText || el.textContent || "")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
   }
 
   function _esc(s) {
@@ -855,7 +900,7 @@ const App = (() => {
            setDateFilter,
            openDropdown, ddSearch,
            openJob, closeDetail, showTab,
-           setStatus, bulkStatusFromSelect, rescore, regenerate, exportPDF,
+           setStatus, bulkStatusFromSelect, rescore, analyze, regenerate, exportPDF,
            triggerRun,
            closeDrawer, submitApiKey,
            toggleSelectMode, toggleCheck, clearSelection, bulkStatus,

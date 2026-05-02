@@ -58,7 +58,7 @@ def _load_prefs() -> dict:
 
 def _deserialize_job(job: dict) -> dict:
     """Parse JSON string fields into Python lists for API responses."""
-    for field in ("match_strengths", "match_gaps"):
+    for field in ("match_strengths", "match_gaps", "match_requirements", "match_resume_suggestions"):
         val = job.get(field)
         if isinstance(val, str):
             try:
@@ -518,6 +518,55 @@ def settings_save_preferences(body: PreferencesUpdate, _=Depends(require_api_key
 def pipeline_run(body: RunRequest = RunRequest(), _=Depends(require_api_key)):
     """Run a pipeline action for selected companies."""
     task_id = create_task(_do_run, body.group, body.companies or None, body.action)
+    return {"task_id": task_id}
+
+
+def _do_analyze_job(log, company: str, job_id: str):
+    """Run two-call deep analysis for a single job and persist results."""
+    from pipeline.analyzer import Analyzer
+    from pipeline.profile import ProfileLoader
+    from pipeline.llm import create_provider
+
+    prefs = _load_prefs()
+    provider = create_provider(prefs)
+    store = JobStore(DB_PATH)
+    try:
+        job = store.get_job(company, job_id)
+    finally:
+        store.close()
+    if not job:
+        raise ValueError(f"Job not found: {company}/{job_id}")
+
+    log(f"Deep analysis: {job['company']} — {job['title']}")
+    loader = ProfileLoader(profile_dir=PROFILE_DIR,
+                           google_docs_links=prefs.get("google_docs_links", []),
+                           provider=provider)
+    profile = loader.load(job=job)
+
+    analyzer = Analyzer(provider=provider)
+    result = analyzer.analyze(job, profile, log=log)
+
+    store2 = JobStore(DB_PATH)
+    store2.set_analysis(company, job_id, result.requirements, result.resume_suggestions)
+    store2.close()
+    log(f"\nDone. {len(result.requirements)} requirements evaluated, "
+        f"{len(result.resume_suggestions)} resume suggestions generated.")
+    return {
+        "requirements": result.requirements,
+        "resume_suggestions": result.resume_suggestions,
+    }
+
+
+@app.post("/api/jobs/{company}/{job_id}/analyze")
+def analyze_job(company: str, job_id: str, _=Depends(require_api_key)):
+    """Run deep two-call analysis for a single job."""
+    store = JobStore(DB_PATH)
+    try:
+        if not store.get_job(company, job_id):
+            raise HTTPException(status_code=404, detail="Job not found")
+    finally:
+        store.close()
+    task_id = create_task(_do_analyze_job, company, job_id)
     return {"task_id": task_id}
 
 

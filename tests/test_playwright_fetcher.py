@@ -78,7 +78,7 @@ class TestGooglePlaywrightFetcher:
 
         fetcher = GooglePlaywrightFetcher()
         with patch.object(fetcher, "_get_description", return_value="desc"):
-            jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
+            jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page, lambda x: None, set())
 
         assert len(jobs) == 1
         assert jobs[0]["title"] == "Engineering Manager, Ads"
@@ -91,7 +91,7 @@ class TestGooglePlaywrightFetcher:
         page = _mock_page()
         page.query_selector_all.return_value = [card]
         fetcher = GooglePlaywrightFetcher()
-        jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
+        jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page, lambda x: None, set())
         assert jobs == []
 
     def test_returns_normalized_job_dict(self):
@@ -101,7 +101,7 @@ class TestGooglePlaywrightFetcher:
         page.query_selector_all.return_value = [card]
         fetcher = GooglePlaywrightFetcher()
         with patch.object(fetcher, "_get_description", return_value="full jd"):
-            jobs = fetcher._fetch_keyword("Director of Engineering", PREFERENCES, page)
+            jobs = fetcher._fetch_keyword("Director of Engineering", PREFERENCES, page, lambda x: None, set())
         assert len(jobs) == 1
         job = jobs[0]
         for key in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
@@ -124,7 +124,7 @@ class TestGooglePlaywrightFetcher:
         page = _mock_page()
         page.goto.side_effect = Exception("Timeout")
         fetcher = GooglePlaywrightFetcher()
-        jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
+        jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page, lambda x: None, set())
         assert jobs == []
 
     def test_get_description_returns_empty_on_error(self):
@@ -299,7 +299,6 @@ class TestMicrosoftPlaywrightFetcher:
         assert jobs == []
 
 
-
 # ── WalmartPlaywrightFetcher ───────────────────────────────────────────────────
 
 WALMART_API_RESPONSE = {
@@ -372,7 +371,6 @@ class TestPlaywrightFetcherMap:
         ("google", GooglePlaywrightFetcher),
         ("apple", ApplePlaywrightFetcher),
         ("meta", MetaPlaywrightFetcher),
-        ("microsoft", MicrosoftPlaywrightFetcher),
         ("walmart", WalmartPlaywrightFetcher),
     ])
     def test_map_contains_all_fetchers(self, ats_key, expected_cls):

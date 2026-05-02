@@ -52,57 +52,74 @@ def generator(tmp_path, mock_provider):
 
 class TestContentGenerator:
     def test_returns_generated_content_object(self, generator):
-        with patch.object(generator, "_call_claude") as mock_claude:
-            mock_claude.side_effect = [MOCK_COVER_LETTER, MOCK_TAILORED_RESUME]
-            result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
+        with patch("pipeline.profile.ProfileLoader") as MockLoader:
+            MockLoader.return_value.full_text.return_value = "profile text"
+            with patch.object(generator, "_call_claude") as mock_claude:
+                mock_claude.side_effect = [MOCK_COVER_LETTER]
+                result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
         assert isinstance(result, GeneratedContent)
 
     def test_cover_letter_contains_company_name(self, generator):
-        with patch.object(generator, "_call_claude") as mock_claude:
-            mock_claude.side_effect = [MOCK_COVER_LETTER, MOCK_TAILORED_RESUME]
-            result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
+        with patch("pipeline.profile.ProfileLoader") as MockLoader:
+            MockLoader.return_value.full_text.return_value = "profile text"
+            with patch.object(generator, "_call_claude") as mock_claude:
+                mock_claude.side_effect = [MOCK_COVER_LETTER]
+                result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
         assert "Uber" in result.cover_letter
 
     def test_tailored_resume_returned(self, generator):
-        with patch.object(generator, "_call_claude") as mock_claude:
-            mock_claude.side_effect = [MOCK_COVER_LETTER, MOCK_TAILORED_RESUME]
-            result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
+        with patch("pipeline.profile.ProfileLoader") as MockLoader:
+            MockLoader.return_value.full_text.return_value = "profile text"
+            with patch.object(generator, "_call_claude") as mock_claude:
+                mock_claude.side_effect = [MOCK_COVER_LETTER]
+                result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
+        # tailored_resume is now profile["resume"] as-is
         assert len(result.tailored_resume) > 0
 
     def test_diff_is_generated(self, generator):
-        with patch.object(generator, "_call_claude") as mock_claude:
-            mock_claude.side_effect = [MOCK_COVER_LETTER, MOCK_TAILORED_RESUME]
-            result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
+        with patch("pipeline.profile.ProfileLoader") as MockLoader:
+            MockLoader.return_value.full_text.return_value = "profile text"
+            with patch.object(generator, "_call_claude") as mock_claude:
+                mock_claude.side_effect = [MOCK_COVER_LETTER]
+                result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
         assert result.resume_diff is not None
-        # Diff should be a non-empty string since resumes differ
-        assert len(result.resume_diff) > 0
+        # resume_diff is always "" now (no tailoring)
+        assert result.resume_diff == ""
 
     def test_diff_shows_additions_and_removals(self, generator):
-        with patch.object(generator, "_call_claude") as mock_claude:
-            mock_claude.side_effect = [MOCK_COVER_LETTER, MOCK_TAILORED_RESUME]
-            result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
-        # Unified diff format uses + for additions, - for removals
-        assert "+" in result.resume_diff or "-" in result.resume_diff
+        with patch("pipeline.profile.ProfileLoader") as MockLoader:
+            MockLoader.return_value.full_text.return_value = "profile text"
+            with patch.object(generator, "_call_claude") as mock_claude:
+                mock_claude.side_effect = [MOCK_COVER_LETTER]
+                result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
+        # No diff since resume is used as-is
+        assert result.resume_diff == ""
 
     def test_files_saved_to_output_dir(self, generator, tmp_path):
-        with patch.object(generator, "_call_claude") as mock_claude:
-            mock_claude.side_effect = [MOCK_COVER_LETTER, MOCK_TAILORED_RESUME]
-            result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
+        with patch("pipeline.profile.ProfileLoader") as MockLoader:
+            MockLoader.return_value.full_text.return_value = "profile text"
+            with patch.object(generator, "_call_claude") as mock_claude:
+                mock_claude.side_effect = [MOCK_COVER_LETTER]
+                result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
         job_dir = os.path.join(str(tmp_path), "Uber_1001")
         assert os.path.exists(os.path.join(job_dir, "cover_letter.md"))
         assert os.path.exists(os.path.join(job_dir, "resume_tailored.md"))
         assert os.path.exists(os.path.join(job_dir, "resume_diff.patch"))
 
     def test_output_dir_named_company_jobid(self, generator, tmp_path):
-        with patch.object(generator, "_call_claude") as mock_claude:
-            mock_claude.side_effect = [MOCK_COVER_LETTER, MOCK_TAILORED_RESUME]
-            result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
+        with patch("pipeline.profile.ProfileLoader") as MockLoader:
+            MockLoader.return_value.full_text.return_value = "profile text"
+            with patch.object(generator, "_call_claude") as mock_claude:
+                mock_claude.side_effect = [MOCK_COVER_LETTER]
+                result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
         assert result.output_dir == os.path.join(str(tmp_path), "Uber_1001")
 
     def test_cover_letter_file_contents_match(self, generator, tmp_path):
-        with patch.object(generator, "_call_claude") as mock_claude:
-            mock_claude.side_effect = [MOCK_COVER_LETTER, MOCK_TAILORED_RESUME]
-            result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
+        with patch("pipeline.profile.ProfileLoader") as MockLoader:
+            MockLoader.return_value.full_text.return_value = "profile text"
+            with patch.object(generator, "_call_claude") as mock_claude:
+                mock_claude.side_effect = [MOCK_COVER_LETTER]
+                result = generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
         cover_path = os.path.join(str(tmp_path), "Uber_1001", "cover_letter.md")
         with open(cover_path) as f:
             content = f.read()
@@ -112,16 +129,20 @@ class TestContentGenerator:
         """If tailored resume is identical to base, diff should be empty."""
         same_resume = SAMPLE_PROFILE["resume"]
         profile_same = {**SAMPLE_PROFILE}
-        with patch.object(generator, "_call_claude") as mock_claude:
-            mock_claude.side_effect = [MOCK_COVER_LETTER, same_resume]
-            result = generator.generate(SAMPLE_JOB, profile_same)
+        with patch("pipeline.profile.ProfileLoader") as MockLoader:
+            MockLoader.return_value.full_text.return_value = "profile text"
+            with patch.object(generator, "_call_claude") as mock_claude:
+                mock_claude.side_effect = [MOCK_COVER_LETTER]
+                result = generator.generate(SAMPLE_JOB, profile_same)
         assert result.resume_diff == ""
 
     def test_existing_output_overwritten(self, generator, tmp_path):
         """Second generate call for same job should overwrite files."""
         for _ in range(2):
-            with patch.object(generator, "_call_claude") as mock_claude:
-                mock_claude.side_effect = [MOCK_COVER_LETTER, MOCK_TAILORED_RESUME]
-                generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
+            with patch("pipeline.profile.ProfileLoader") as MockLoader:
+                MockLoader.return_value.full_text.return_value = "profile text"
+                with patch.object(generator, "_call_claude") as mock_claude:
+                    mock_claude.side_effect = [MOCK_COVER_LETTER]
+                    generator.generate(SAMPLE_JOB, SAMPLE_PROFILE)
         # Should not raise; files just get overwritten
         assert os.path.exists(os.path.join(str(tmp_path), "Uber_1001", "cover_letter.md"))

@@ -1,7 +1,7 @@
 """Unit tests for the Gmail alerter."""
 import pytest
 from unittest.mock import patch, MagicMock, call
-from pipeline.alerter import GmailAlerter, build_alert_email, _sanitize
+from pipeline.alerter import GmailAlerter, build_summary_email, _sanitize
 
 
 SAMPLE_JOBS = [
@@ -31,20 +31,29 @@ SAMPLE_JOBS = [
     },
 ]
 
+SAMPLE_STATS = {
+    "total_fetched": 2,
+    "new_jobs": 2,
+    "rescored_jobs": 0,
+    "scored_jobs": 2,
+    "failed_scoring": 0,
+    "threshold": 7,
+}
+
 
 class TestSanitize:
     def test_replaces_non_breaking_space(self):
         assert _sanitize("Remote\xa0- USA") == "Remote - USA"
 
     def test_replaces_em_dash(self):
-        assert _sanitize("matched \u2014 review") == "matched - review"
+        assert _sanitize("matched — review") == "matched - review"
 
     def test_replaces_en_dash(self):
-        assert _sanitize("2020\u20132024") == "2020-2024"
+        assert _sanitize("2020–2024") == "2020-2024"
 
     def test_replaces_curly_quotes(self):
-        assert _sanitize("\u201cquoted\u201d") == '"quoted"'
-        assert _sanitize("it\u2019s") == "it's"
+        assert _sanitize("“quoted”") == '"quoted"'
+        assert _sanitize("it’s") == "it's"
 
     def test_plain_ascii_unchanged(self):
         text = "Engineering Manager, New York, NY"
@@ -53,41 +62,50 @@ class TestSanitize:
 
 class TestBuildAlertEmail:
     def test_subject_contains_job_count(self):
-        subject, body = build_alert_email(SAMPLE_JOBS)
+        subject, body = build_summary_email(SAMPLE_JOBS, SAMPLE_JOBS, SAMPLE_STATS)
+        # Subject format: "[Job Pipeline] DATE — 2 scanned, 2 new, 2 high-match"
         assert "2" in subject
 
     def test_body_contains_company_names(self):
-        _, body = build_alert_email(SAMPLE_JOBS)
+        _, body = build_summary_email(SAMPLE_JOBS, SAMPLE_JOBS, SAMPLE_STATS)
         assert "Uber" in body
         assert "DoorDash" in body
 
     def test_body_contains_job_titles(self):
-        _, body = build_alert_email(SAMPLE_JOBS)
+        _, body = build_summary_email(SAMPLE_JOBS, SAMPLE_JOBS, SAMPLE_STATS)
         assert "Senior Engineering Manager, Ads" in body
         assert "Director of Engineering, Merchant" in body
 
     def test_body_contains_match_scores(self):
-        _, body = build_alert_email(SAMPLE_JOBS)
+        _, body = build_summary_email(SAMPLE_JOBS, SAMPLE_JOBS, SAMPLE_STATS)
         assert "9" in body
         assert "7" in body
 
     def test_body_contains_apply_cli_commands(self):
-        _, body = build_alert_email(SAMPLE_JOBS)
+        _, body = build_summary_email(SAMPLE_JOBS, SAMPLE_JOBS, SAMPLE_STATS)
         assert "approve" in body.lower() or "python3" in body.lower()
 
     def test_body_contains_job_urls(self):
-        _, body = build_alert_email(SAMPLE_JOBS)
+        _, body = build_summary_email(SAMPLE_JOBS, SAMPLE_JOBS, SAMPLE_STATS)
         assert "boards.greenhouse.io/uber" in body
 
     def test_jobs_sorted_by_score_descending(self):
-        _, body = build_alert_email(SAMPLE_JOBS)
+        _, body = build_summary_email(SAMPLE_JOBS, SAMPLE_JOBS, SAMPLE_STATS)
         uber_pos = body.find("Uber")
         doordash_pos = body.find("DoorDash")
         assert uber_pos < doordash_pos  # higher score (9) appears first
 
     def test_empty_jobs_list(self):
-        subject, body = build_alert_email([])
-        assert "0" in subject or "no" in subject.lower()
+        empty_stats = {
+            "total_fetched": 0,
+            "new_jobs": 0,
+            "rescored_jobs": 0,
+            "scored_jobs": 0,
+            "failed_scoring": 0,
+            "threshold": 7,
+        }
+        subject, body = build_summary_email([], [], empty_stats)
+        assert "0" in subject
 
 
 class TestGmailAlerter:
@@ -100,20 +118,50 @@ class TestGmailAlerter:
             mock_smtp = MagicMock()
             mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_smtp)
             mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
-            alerter.send_alert(SAMPLE_JOBS, smtp_user="user@gmail.com", smtp_password="pass")
+            alerter.send_alert(
+                SAMPLE_JOBS,
+                smtp_user="user@gmail.com",
+                smtp_password="pass",
+                all_scored=SAMPLE_JOBS,
+                stats=SAMPLE_STATS,
+            )
         mock_smtp.send_message.assert_called_once()
 
-    def test_no_send_when_jobs_empty(self, alerter):
+    def test_always_sends_even_with_empty_jobs(self, alerter):
+        """send_alert now always sends, even when alert_jobs is empty."""
+        empty_stats = {
+            "total_fetched": 0,
+            "new_jobs": 0,
+            "rescored_jobs": 0,
+            "scored_jobs": 0,
+            "failed_scoring": 0,
+            "threshold": 7,
+        }
         with patch("pipeline.alerter.smtplib.SMTP_SSL") as mock_smtp_cls:
-            alerter.send_alert([], smtp_user="user@gmail.com", smtp_password="pass")
-        mock_smtp_cls.assert_not_called()
+            mock_smtp = MagicMock()
+            mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_smtp)
+            mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
+            alerter.send_alert(
+                [],
+                smtp_user="user@gmail.com",
+                smtp_password="pass",
+                all_scored=[],
+                stats=empty_stats,
+            )
+        mock_smtp_cls.assert_called_once()
 
     def test_recipient_in_message(self, alerter):
         with patch("pipeline.alerter.smtplib.SMTP_SSL") as mock_smtp_cls:
             mock_smtp = MagicMock()
             mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_smtp)
             mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
-            alerter.send_alert(SAMPLE_JOBS, smtp_user="user@gmail.com", smtp_password="pass")
+            alerter.send_alert(
+                SAMPLE_JOBS,
+                smtp_user="user@gmail.com",
+                smtp_password="pass",
+                all_scored=SAMPLE_JOBS,
+                stats=SAMPLE_STATS,
+            )
         msg = mock_smtp.send_message.call_args[0][0]
         assert msg["To"] == "test@example.com"
 
@@ -129,5 +177,11 @@ class TestGmailAlerter:
             mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_smtp)
             mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
             # Should not raise — previously crashed with ascii codec error
-            alerter.send_alert(jobs_with_unicode, smtp_user="user@gmail.com", smtp_password="pass")
+            alerter.send_alert(
+                jobs_with_unicode,
+                smtp_user="user@gmail.com",
+                smtp_password="pass",
+                all_scored=jobs_with_unicode,
+                stats=SAMPLE_STATS,
+            )
         mock_smtp.send_message.assert_called_once()

@@ -45,3 +45,23 @@ HTTP-based fetchers despite also being large companies.
 `jobs.db` is the source of truth (SQLite via `pipeline/store.py`). Intermediate
 state for long runs is NOT currently checkpointed — a crash loses that run's
 fetched jobs. Re-running will re-fetch.
+
+## Testing requirements
+
+Every feature must have unit AND integration tests before it is committed.
+
+**Unit tests** — in `tests/test_<module>.py`:
+- Test each function/class in isolation with mocked dependencies
+- Cover happy path, edge cases, and error handling
+- Use `unittest.mock.patch` for external calls (LLM, HTTP, filesystem)
+
+**Integration tests** — in `tests/test_server_<area>.py` or alongside unit tests:
+- For any new API endpoint: test it with FastAPI `TestClient` against a real in-memory/temp DB
+- For any pipeline module that touches multiple components: test the interaction end-to-end
+
+**Before any commit**, run the full suite and confirm all tests pass:
+```
+python3 -m pytest tests/ -q
+```
+
+Do not commit unless output ends with `N passed`.
