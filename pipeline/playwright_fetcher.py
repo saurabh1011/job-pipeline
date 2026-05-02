@@ -539,6 +539,7 @@ query JobSearch($searchInput: JobSearchInput!) {
                 "url": job_url,
                 "apply_url": job_url,
                 "description": _strip_html(job.get("jobDescription", "")),
+                "date_posted": job.get("postedDate"),
             })
         return results
 

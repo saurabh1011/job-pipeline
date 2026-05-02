@@ -64,6 +64,8 @@ _MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN match_gaps TEXT",
     "ALTER TABLE jobs ADD COLUMN match_requirements TEXT",
     "ALTER TABLE jobs ADD COLUMN match_resume_suggestions TEXT",
+    "ALTER TABLE jobs ADD COLUMN date_posted TEXT",
+    "ALTER TABLE jobs ADD COLUMN date_last_sourced TEXT",
 ]
 
 
@@ -88,19 +90,32 @@ class JobStore:
         self._conn.close()
 
     def upsert_job(self, job: dict) -> bool:
-        """Insert job if not seen before. Returns True if new, False if duplicate."""
+        """Insert job if not seen before; update sourcing timestamps if already exists.
+
+        Returns True if new, False if duplicate.
+        date_last_sourced is always updated to now on re-fetch.
+        date_posted uses COALESCE so an existing value is never overwritten.
+        """
         existing = self.get_job(job["company"], job["job_id"])
-        if existing is not None:
-            return False
         now = datetime.now(timezone.utc).isoformat()
+        if existing is not None:
+            self._conn.execute(
+                """UPDATE jobs
+                   SET date_last_sourced = ?,
+                       date_posted = COALESCE(date_posted, ?)
+                   WHERE company = ? AND job_id = ?""",
+                (now, job.get("date_posted"), job["company"], job["job_id"]),
+            )
+            self._conn.commit()
+            return False
         self._conn.execute(
             """
             INSERT INTO jobs (company, job_id, title, location, url, apply_url,
-                              description, status, date_seen)
+                              description, status, date_seen, date_last_sourced, date_posted)
             VALUES (:company, :job_id, :title, :location, :url, :apply_url,
-                    :description, 'new', :date_seen)
+                    :description, 'new', :date_seen, :date_seen, :date_posted)
             """,
-            {**job, "date_seen": now},
+            {**job, "date_seen": now, "date_posted": job.get("date_posted")},
         )
         self._conn.commit()
         return True

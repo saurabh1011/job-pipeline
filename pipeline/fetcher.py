@@ -14,6 +14,7 @@ Each fetcher.fetch(preferences) returns a list of normalized job dicts:
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from typing import List, Dict, Any
 
 import requests
@@ -345,6 +346,8 @@ class AshbyFetcher:
             if not _matches_location(location, preferences):
                 logger.debug("Excluded by location: %s — %s", title, location)
                 continue
+            published_at = job.get("publishedAt")
+            date_posted = published_at[:10] if published_at else None
             results.append({
                 "job_id": str(job["id"]),
                 "company": self.company_name,
@@ -353,6 +356,7 @@ class AshbyFetcher:
                 "url": job.get("jobUrl", ""),
                 "apply_url": job.get("applyUrl", job.get("jobUrl", "")),
                 "description": job.get("descriptionPlain", "") or _strip_html(job.get("descriptionHtml", "")),
+                "date_posted": date_posted,
             })
         logger.info("Ashby/%s: %d matching jobs found", self.company_name, len(results))
         return results
@@ -606,7 +610,7 @@ class MicrosoftFetcher:
         self.company_name = company_name
 
     def _fetch_description(self, job_id: str) -> tuple:
-        """Returns (description_text, posted_ts) for a position."""
+        """Returns (description_text, date_posted_iso) for a position."""
         import time
         time.sleep(1)  # avoid rate limiting
         try:
@@ -621,7 +625,10 @@ class MicrosoftFetcher:
             html_desc = data.get("jobDescription", "") or ""
             text = BeautifulSoup(html_desc, "html.parser").get_text(separator="\n").strip()
             posted_ts = data.get("postedTs")
-            return text, posted_ts
+            date_posted = None
+            if posted_ts:
+                date_posted = datetime.fromtimestamp(posted_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            return text, date_posted
         except Exception as exc:
             logger.warning("Microsoft description fetch failed for %s: %s", job_id, exc)
             return "", None
@@ -659,7 +666,7 @@ class MicrosoftFetcher:
                         logger.debug("Microsoft excluded by location: %s — %s", title, location)
                         continue
                     seen_ids.add(job_id)
-                    description, posted_ts = self._fetch_description(job_id)
+                    description, date_posted = self._fetch_description(job_id)
                     url = f"{self._JOB_BASE}/{job_id}"
                     results.append({
                         "job_id": job_id,
@@ -669,7 +676,7 @@ class MicrosoftFetcher:
                         "url": url,
                         "apply_url": url,
                         "description": description,
-                        "posted_date": posted_ts,
+                        "date_posted": date_posted,
                     })
                 if len(positions) < self._PAGE_SIZE:
                     break
@@ -807,6 +814,10 @@ class LeverFetcher:
             job_id = str(job.get("id", ""))
             job_url = job.get("hostedUrl", f"https://jobs.lever.co/{self.board_slug}/{job_id}")
             description = _strip_html(job.get("descriptionPlain", "") or job.get("description", ""))
+            created_at_ms = job.get("createdAt")
+            date_posted = None
+            if created_at_ms:
+                date_posted = datetime.fromtimestamp(created_at_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
             results.append({
                 "job_id": job_id,
                 "company": self.company_name,
@@ -815,6 +826,7 @@ class LeverFetcher:
                 "url": job_url,
                 "apply_url": job.get("applyUrl", job_url),
                 "description": description.strip(),
+                "date_posted": date_posted,
             })
         logger.info("Lever/%s: %d matching jobs found", self.company_name, len(results))
         return results
@@ -920,7 +932,7 @@ class LinkedInFetcher:
                         "url": url,
                         "apply_url": url,
                         "description": description,
-                        "posted_date": posted_date,
+                        "date_posted": posted_date,
                     })
                 import time
                 time.sleep(1)  # avoid rate limiting between search pages

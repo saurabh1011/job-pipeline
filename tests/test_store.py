@@ -63,6 +63,42 @@ class TestUpsertAndFetch:
     def test_get_job_missing_returns_none(self, store):
         assert store.get_job("NoCompany", "999") is None
 
+    def test_date_last_sourced_set_on_new_job(self, store):
+        store.upsert_job(make_job())
+        job = store.get_job("Acme", "123")
+        assert job["date_last_sourced"] is not None
+
+    def test_date_posted_stored_on_new_job(self, store):
+        store.upsert_job(make_job(date_posted="2024-01-15"))
+        job = store.get_job("Acme", "123")
+        assert job["date_posted"] == "2024-01-15"
+
+    def test_date_posted_none_when_not_provided(self, store):
+        store.upsert_job(make_job())
+        job = store.get_job("Acme", "123")
+        assert job["date_posted"] is None
+
+    def test_date_last_sourced_updated_on_re_upsert(self, store):
+        store.upsert_job(make_job())
+        first_sourced = store.get_job("Acme", "123")["date_last_sourced"]
+        import time
+        time.sleep(0.01)
+        store.upsert_job(make_job())
+        second_sourced = store.get_job("Acme", "123")["date_last_sourced"]
+        assert second_sourced >= first_sourced
+
+    def test_date_posted_not_overwritten_on_re_upsert(self, store):
+        store.upsert_job(make_job(date_posted="2024-01-10"))
+        store.upsert_job(make_job(date_posted="2024-02-20"))  # existing job, should keep original
+        job = store.get_job("Acme", "123")
+        assert job["date_posted"] == "2024-01-10"
+
+    def test_date_posted_set_on_re_upsert_when_previously_null(self, store):
+        store.upsert_job(make_job())  # no date_posted
+        store.upsert_job(make_job(date_posted="2024-03-01"))  # now provide one
+        job = store.get_job("Acme", "123")
+        assert job["date_posted"] == "2024-03-01"
+
 
 class TestStatusUpdates:
     def test_default_status_is_new(self, store):

@@ -350,7 +350,7 @@ class TestMicrosoftFetcher:
             jobs = ms_fetcher.fetch(PREFERENCES)
         assert len(jobs) == 1
         job = jobs[0]
-        for key in ["job_id", "company", "title", "location", "url", "apply_url", "description", "posted_date"]:
+        for key in ["job_id", "company", "title", "location", "url", "apply_url", "description", "date_posted"]:
             assert key in job, f"Missing key: {key}"
 
     def test_description_is_populated_and_html_stripped(self, ms_fetcher):
@@ -362,11 +362,11 @@ class TestMicrosoftFetcher:
         assert "<p>" not in job["description"], "HTML tags should be stripped"
         assert "Qualifications" in job["description"], "Description content should be present"
 
-    def test_posted_date_populated(self, ms_fetcher):
+    def test_date_posted_populated(self, ms_fetcher):
         with patch("pipeline.fetcher.requests.get", side_effect=_make_ms_mock(MS_SEARCH_RESPONSE, MS_DETAIL_RESPONSE)):
             jobs = ms_fetcher.fetch(PREFERENCES)
         job = jobs[0]
-        assert job["posted_date"] == 1773255862
+        assert job["date_posted"] == "2026-03-11"
 
     def test_location_populated(self, ms_fetcher):
         with patch("pipeline.fetcher.requests.get", side_effect=_make_ms_mock(MS_SEARCH_RESPONSE, MS_DETAIL_RESPONSE)):

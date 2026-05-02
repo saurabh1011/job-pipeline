@@ -283,6 +283,35 @@ class TestListRuns:
         assert run["error_msg"] == "boom"
 
 
+# ── Date fields ───────────────────────────────────────────────────────────────
+
+class TestDateFields:
+    def test_date_last_sourced_in_api_response(self, client, db_path):
+        _seed(db_path)
+        r = client.get("/api/jobs")
+        job = r.json()["jobs"][0]
+        assert "date_last_sourced" in job
+        assert job["date_last_sourced"] is not None
+
+    def test_date_posted_null_when_not_provided(self, client, db_path):
+        _seed(db_path)
+        r = client.get("/api/jobs")
+        job = r.json()["jobs"][0]
+        assert "date_posted" in job
+        assert job["date_posted"] is None
+
+    def test_date_posted_returned_when_set(self, client, db_path):
+        _seed(db_path, date_posted="2024-06-15")
+        r = client.get("/api/jobs/Acme/j1")
+        assert r.json()["date_posted"] == "2024-06-15"
+
+    def test_date_last_sourced_in_single_job_response(self, client, db_path):
+        _seed(db_path)
+        r = client.get("/api/jobs/Acme/j1")
+        assert r.status_code == 200
+        assert r.json()["date_last_sourced"] is not None
+
+
 # ── Auth enforcement ──────────────────────────────────────────────────────────
 
 class TestAuthEnforcement:

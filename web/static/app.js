@@ -292,12 +292,14 @@ const App = (() => {
         </div>`;
     }
 
+    const dateLine = _dateLine(j);
     return `
       <div class="job-card${cardSelected}" onclick="App.openJob('${_esc(j.company)}', '${_esc(j.job_id)}')">
         <div class="score-badge ${sc}">${score}</div>
         <div class="job-meta">
           <div class="job-title">${_esc(j.title)}</div>
           <div class="job-sub">${_esc(j.company)} &middot; ${_esc(j.location || "")}</div>
+          ${dateLine ? `<div class="job-dates">${_esc(dateLine)}</div>` : ""}
           ${preview ? `<div class="job-sub" style="margin-top:4px">${_esc(preview)}</div>` : ""}
         </div>
         <div class="status-chip status-${j.status}">${j.status}</div>
@@ -366,9 +368,11 @@ const App = (() => {
     _currentJob = job;
 
     document.getElementById("detail-title").textContent = job.title;
+    const detailDateLine = _dateLine(job);
     document.getElementById("detail-sub").innerHTML =
       `${_esc(job.company)} &middot; ${_esc(job.location || "Remote")}` +
-      (job.apply_url ? ` &middot; <a class="apply-link" href="${job.apply_url}" target="_blank">Apply ↗</a>` : "");
+      (job.apply_url ? ` &middot; <a class="apply-link" href="${job.apply_url}" target="_blank">Apply ↗</a>` : "") +
+      (detailDateLine ? `<br><span class="detail-dates">${_esc(detailDateLine)}</span>` : "");
     document.getElementById("detail-score").textContent =
       job.match_score != null ? `${job.match_score}/10` : "";
 
@@ -896,6 +900,23 @@ const App = (() => {
   }
 
   // ── Utilities ─────────────────────────────────────────────────────────────
+
+  function _fmtDate(isoStr) {
+    if (!isoStr) return null;
+    const d = new Date(isoStr);
+    if (isNaN(d)) return null;
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+
+  function _dateLine(job) {
+    const posted = _fmtDate(job.date_posted);
+    const sourced = _fmtDate(job.date_last_sourced);
+    if (!posted && !sourced) return "";
+    const parts = [];
+    if (posted) parts.push(`Posted ${posted}`);
+    if (sourced) parts.push(`Sourced ${sourced}`);
+    return parts.join(" · ");
+  }
 
   function _formatDescription(text) {
     if (!text) return "";
