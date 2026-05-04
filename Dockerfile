@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# Install system deps for Playwright + Chromium
+# Install system deps for Playwright + Chromium + PDF export
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
@@ -17,7 +17,16 @@ RUN apt-get update && apt-get install -y \
     libcairo2 \
     libasound2 \
     fonts-liberation \
+    pandoc \
+    wget \
     && rm -rf /var/lib/apt/lists/*
+
+# Install typst (pandoc PDF engine)
+RUN wget -qO /tmp/typst.tar.xz \
+    "https://github.com/typst/typst/releases/download/v0.13.1/typst-x86_64-unknown-linux-musl.tar.xz" \
+    && tar -xJf /tmp/typst.tar.xz -C /tmp \
+    && mv /tmp/typst-x86_64-unknown-linux-musl/typst /usr/local/bin/typst \
+    && rm -rf /tmp/typst*
 
 WORKDIR /app
 
