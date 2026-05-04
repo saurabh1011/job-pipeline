@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     pandoc \
     wget \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Install typst (pandoc PDF engine)
