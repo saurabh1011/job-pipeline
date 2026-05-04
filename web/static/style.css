@@ -129,6 +129,12 @@ main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 
 /* Cover letter */
 .cover-letter { white-space: pre-wrap; font-size: 14px; line-height: 1.7; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+.cover-letter-editor { width: 100%; min-height: 420px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; font-size: 14px; line-height: 1.7; font-family: inherit; resize: vertical; box-sizing: border-box; outline: none; }
+.cover-letter-editor:focus { border-color: var(--accent); }
+.cover-letter-save-bar { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.save-status { font-size: 12px; }
+.save-ok { color: var(--green); }
+.save-error { color: var(--red); }
 
 /* Diff */
 .diff-view { font-family: var(--mono); font-size: 13px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; overflow-x: auto; }

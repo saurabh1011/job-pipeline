@@ -232,6 +232,28 @@ def export_pdf(company: str, job_id: str, _=Depends(require_api_key)):
     return {"task_id": task_id}
 
 
+class CoverLetterUpdate(BaseModel):
+    content: str
+
+
+@app.put("/api/jobs/{company}/{job_id}/cover-letter")
+def update_cover_letter(company: str, job_id: str, body: CoverLetterUpdate, _=Depends(require_api_key)):
+    store = JobStore(DB_PATH)
+    try:
+        if not store.get_job(company, job_id):
+            raise HTTPException(status_code=404, detail="Job not found")
+    finally:
+        store.close()
+    job_dir = os.path.join(OUTPUT_DIR, f"{company}_{job_id}")
+    os.makedirs(job_dir, exist_ok=True)
+    path = os.path.join(job_dir, "cover_letter.md")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(body.content)
+    shutil.move(tmp, path)
+    return {"ok": True}
+
+
 # ── Pipeline actions ──────────────────────────────────────────────────────────
 
 _PLAYWRIGHT_ATS = {"google", "apple", "meta", "walmart"}

@@ -116,6 +116,52 @@ class TestGetJob:
         assert r.json()["cover_letter"] is None
 
 
+# ── PUT /api/jobs/{company}/{job_id}/cover-letter ─────────────────────────────
+
+class TestUpdateCoverLetter:
+    def test_saves_cover_letter(self, client, db_path, tmp_path, monkeypatch):
+        monkeypatch.setattr("web.server.OUTPUT_DIR", str(tmp_path))
+        _seed(db_path)
+        r = client.put("/api/jobs/Acme/j1/cover-letter", json={"content": "Hello world"})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+
+    def test_content_readable_back_via_get(self, client, db_path, tmp_path, monkeypatch):
+        monkeypatch.setattr("web.server.OUTPUT_DIR", str(tmp_path))
+        _seed(db_path)
+        client.put("/api/jobs/Acme/j1/cover-letter", json={"content": "My cover letter."})
+        r = client.get("/api/jobs/Acme/j1")
+        assert r.json()["cover_letter"] == "My cover letter."
+
+    def test_overwrites_existing_cover_letter(self, client, db_path, tmp_path, monkeypatch):
+        monkeypatch.setattr("web.server.OUTPUT_DIR", str(tmp_path))
+        _seed(db_path)
+        client.put("/api/jobs/Acme/j1/cover-letter", json={"content": "First version"})
+        client.put("/api/jobs/Acme/j1/cover-letter", json={"content": "Second version"})
+        r = client.get("/api/jobs/Acme/j1")
+        assert r.json()["cover_letter"] == "Second version"
+
+    def test_missing_job_returns_404(self, client):
+        r = client.put("/api/jobs/Acme/missing/cover-letter", json={"content": "x"})
+        assert r.status_code == 404
+
+    def test_creates_output_dir_if_missing(self, client, db_path, tmp_path, monkeypatch):
+        out = tmp_path / "output"
+        monkeypatch.setattr("web.server.OUTPUT_DIR", str(out))
+        _seed(db_path)
+        r = client.put("/api/jobs/Acme/j1/cover-letter", json={"content": "hi"})
+        assert r.status_code == 200
+        assert (out / "Acme_j1" / "cover_letter.md").read_text() == "hi"
+
+    def test_unicode_content_preserved(self, client, db_path, tmp_path, monkeypatch):
+        monkeypatch.setattr("web.server.OUTPUT_DIR", str(tmp_path))
+        _seed(db_path)
+        content = "Dear team,\n\nI'm excited — résumé enclosed.\n\nSincerely,\nSaurabh"
+        client.put("/api/jobs/Acme/j1/cover-letter", json={"content": content})
+        r = client.get("/api/jobs/Acme/j1")
+        assert r.json()["cover_letter"] == content
+
+
 # ── PATCH /api/jobs/{company}/{job_id} ────────────────────────────────────────
 
 class TestUpdateJobStatus:

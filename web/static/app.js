@@ -404,11 +404,14 @@ const App = (() => {
       ? `<div class="job-description">${_esc(descText)}</div>`
       : `<div class="section-empty">No description available.</div>`;
 
-    // Cover letter
+    // Cover letter — editable textarea
     const clEl = document.getElementById("cover-letter-content");
-    clEl.innerHTML = job.cover_letter
-      ? `<div class="cover-letter">${_esc(job.cover_letter)}</div>`
-      : `<div class="section-empty">No cover letter yet. Click Regenerate to create one.</div>`;
+    clEl.innerHTML = `
+      <textarea id="cover-letter-editor" class="cover-letter-editor" placeholder="No cover letter yet. Click Regenerate to create one, or type here and Save.">${_esc(job.cover_letter || "")}</textarea>
+      <div class="cover-letter-save-bar">
+        <button class="btn-primary btn-sm" onclick="App.saveCoverLetter()">Save</button>
+        <span id="cover-letter-save-status" class="save-status"></span>
+      </div>`;
 
     // Diff
     const diffEl = document.getElementById("diff-content");
@@ -490,6 +493,26 @@ const App = (() => {
     const { company, job_id } = _currentJob;
     const data = await _api("POST", `/api/jobs/${company}/${job_id}/analyze`);
     _startTask(data.task_id, "Deep analysis...", () => openJob(company, job_id));
+  }
+
+  async function saveCoverLetter() {
+    if (!_currentJob) return;
+    const { company, job_id } = _currentJob;
+    const editor = document.getElementById("cover-letter-editor");
+    const statusEl = document.getElementById("cover-letter-save-status");
+    if (!editor) return;
+    statusEl.textContent = "Saving…";
+    statusEl.className = "save-status";
+    try {
+      await _api("PUT", `/api/jobs/${company}/${job_id}/cover-letter`, { content: editor.value });
+      _currentJob.cover_letter = editor.value;
+      statusEl.textContent = "Saved";
+      statusEl.className = "save-status save-ok";
+      setTimeout(() => { statusEl.textContent = ""; }, 2500);
+    } catch (e) {
+      statusEl.textContent = "Save failed";
+      statusEl.className = "save-status save-error";
+    }
   }
 
   async function regenerate() {
@@ -986,7 +1009,7 @@ const App = (() => {
            setDateFilter,
            openDropdown, ddSearch,
            openJob, closeDetail, showTab,
-           setStatus, bulkStatusFromSelect, rescore, analyze, regenerate, exportPDF,
+           setStatus, bulkStatusFromSelect, rescore, analyze, regenerate, exportPDF, saveCoverLetter,
            triggerRun,
            closeDrawer, submitApiKey,
            toggleSelectMode, toggleCheck, clearSelection, bulkStatus,
