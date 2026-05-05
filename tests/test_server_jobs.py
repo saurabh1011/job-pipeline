@@ -232,12 +232,17 @@ class TestListCompanies:
     def test_returns_company_names(self, client):
         r = client.get("/api/companies")
         assert r.status_code == 200
-        assert "Acme" in r.json()
+        names = [c["name"] for c in r.json()]
+        assert "Acme" in names
 
-    def test_returns_list_of_strings(self, client):
+    def test_returns_list_of_objects_with_name_and_playwright(self, client):
         r = client.get("/api/companies")
         assert isinstance(r.json(), list)
-        assert all(isinstance(n, str) for n in r.json())
+        for c in r.json():
+            assert "name" in c
+            assert "playwright" in c
+            assert isinstance(c["name"], str)
+            assert isinstance(c["playwright"], bool)
 
 
 # ── POST /api/pipeline/run ────────────────────────────────────────────────────

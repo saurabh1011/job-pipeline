@@ -561,13 +561,17 @@ const App = (() => {
   async function _loadGroupSelect() {
     try {
       const companies = await _api("GET", "/api/companies");
+      const sorted = [...companies].sort((a, b) => a.name.localeCompare(b.name));
       const sel = document.getElementById("group-select");
       sel.innerHTML =
         `<option value="">All</option>` +
         `<option value="http">HTTP</option>` +
         `<option value="playwright">Playwright</option>` +
         `<option disabled>──────────────</option>` +
-        companies.map(c => `<option value="c:${_esc(c)}">${_esc(c)}</option>`).join("");
+        sorted.map(c => {
+          const label = c.playwright ? `${c.name} (Playwright)` : c.name;
+          return `<option value="c:${_esc(c.name)}">${_esc(label)}</option>`;
+        }).join("");
     } catch (e) {
       console.error("Failed to load company list:", e);
     }

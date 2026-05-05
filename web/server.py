@@ -438,10 +438,13 @@ class RunRequest(BaseModel):
 
 @app.get("/api/companies")
 def list_companies(_=Depends(require_api_key)):
-    """Return the list of configured company names (used by run-group dropdown)."""
+    """Return company list with name and playwright flag for the run dropdown."""
     with open(os.path.join(CONFIG_DIR, "companies.yaml")) as f:
         data = yaml.safe_load(f)
-    return [c["name"] for c in data.get("companies", [])]
+    return [
+        {"name": c["name"], "playwright": c.get("ats") in _PLAYWRIGHT_ATS}
+        for c in data.get("companies", [])
+    ]
 
 
 # ── Settings: companies ───────────────────────────────────────────────────────
