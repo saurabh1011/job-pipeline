@@ -211,6 +211,15 @@ class TestUberFetcher:
             jobs = uber_fetcher.fetch(PREFERENCES)
         assert jobs == []
 
+    def test_url_links_to_specific_job(self, uber_fetcher):
+        with patch("pipeline.fetcher.requests.post") as mock_post:
+            mock_post.return_value.json.return_value = UBER_RESPONSE
+            mock_post.return_value.raise_for_status = MagicMock()
+            jobs = uber_fetcher.fetch(PREFERENCES)
+        job = jobs[0]
+        assert job["url"] == "https://www.uber.com/global/en/careers/list/153366/"
+        assert job["apply_url"] == job["url"]
+
     def test_deduplicates_across_keywords(self, uber_fetcher):
         single_job = {
             "status": "success",

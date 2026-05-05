@@ -756,7 +756,7 @@ class UberFetcher:
                 logger.debug("Uber excluded by location: %s — %s", title, location)
                 continue
             job_id = str(item.get("id", ""))
-            job_url = f"https://www.uber.com/global/en/careers/list/?q={keyword.replace(' ', '+')}"
+            job_url = f"https://www.uber.com/global/en/careers/list/{job_id}/"
             results.append({
                 "job_id": job_id,
                 "company": self.company_name,
