@@ -526,7 +526,12 @@ const App = (() => {
     const data = await _api("POST", `/api/jobs/${company}/${job_id}/export`);
     _startTask(data.task_id, "Exporting PDF...", () => {
       openJob(company, job_id);
-      window.open(`/output/${company}_${job_id}/cover_letter.pdf`, "_blank");
+      const a = document.createElement("a");
+      a.href = `/output/${company}_${job_id}/cover_letter.pdf`;
+      a.download = `${company}_${job_id}_cover_letter.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
     });
   }
 
