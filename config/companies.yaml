@@ -94,7 +94,7 @@ companies:
 
   - name: HubSpot
     ats: greenhouse
-    board_slug: hubspot
+    board_slug: hubspotjobs
 
   - name: CoreWeave
     ats: greenhouse
