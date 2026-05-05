@@ -22,7 +22,7 @@ from datetime import date
 
 from pipeline.fetcher import fetch_all_companies
 from pipeline.store import JobStore, JobStatus
-from pipeline.matcher import MatchEngine
+from pipeline.scorer import JobScorer
 from pipeline.generator import ContentGenerator
 from pipeline.alerter import GmailAlerter, build_console_summary
 from pipeline.profile import ProfileLoader
@@ -140,7 +140,7 @@ def run_pipeline(
 
     # Initialize components
     store = JobStore(db_path)
-    engine = MatchEngine(provider=provider)
+    engine = JobScorer(provider=provider)
     generator = ContentGenerator(provider=provider, output_dir=output_dir)
     alerter = GmailAlerter(recipient_email=recipient)
 

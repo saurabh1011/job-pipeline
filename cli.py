@@ -288,7 +288,7 @@ def apply(url, text, company, title):
     from bs4 import BeautifulSoup
     from pipeline.profile import ProfileLoader
     from pipeline.generator import ContentGenerator
-    from pipeline.matcher import MatchEngine
+    from pipeline.scorer import JobScorer
     from pipeline.llm import create_provider
 
     if not url and not text:
@@ -385,7 +385,7 @@ def apply(url, text, company, title):
     provider = create_provider(prefs)
 
     click.echo("Scoring ...")
-    matcher = MatchEngine(provider=provider)
+    matcher = JobScorer(provider=provider)
     result_match = matcher.score(job, profile, prefs)
     score = result_match.adjusted_score
     summary = result_match.summary

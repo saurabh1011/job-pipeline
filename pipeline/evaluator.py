@@ -1,16 +1,17 @@
-"""Deep job analysis: two-call LLM approach for granular requirement evaluation.
+"""JobEvaluator — deep per-requirement evaluation of a job against the candidate's profile.
 
-Call 1 — Extract: given a job description, produce a structured list of requirements.
-Call 2 — Evaluate: given the extracted requirements + candidate profile, evaluate
-         each requirement and produce resume suggestions.
+Two-call LLM approach:
+  Call 1 — Extract: given a job description, produce a structured list of requirements.
+  Call 2 — Evaluate: given the extracted requirements + candidate profile, evaluate
+           each requirement and produce resume suggestions.
 
-This is an on-demand feature for jobs the candidate cares about — not run in batch.
+On-demand only — not run in batch scoring.
 
 Input:
     job:     normalized job dict (from store)
     profile: profile dict (from ProfileLoader.load())
 
-Output (AnalysisResult):
+Output (EvaluationResult):
     requirements:        list of {requirement, fit, evidence, resume_suggestion}
     resume_suggestions:  list of actionable resume improvement strings
 """
@@ -19,7 +20,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 from pipeline.llm import LLMProvider
 
@@ -99,7 +100,7 @@ Return ONLY the JSON object, no other text."""
 
 
 @dataclass
-class AnalysisResult:
+class EvaluationResult:
     requirements: List[dict] = field(default_factory=list)
     resume_suggestions: List[str] = field(default_factory=list)
 
@@ -111,19 +112,19 @@ def _clean_json(raw: str) -> str:
     return cleaned
 
 
-class Analyzer:
+class JobEvaluator:
     def __init__(self, provider: LLMProvider):
         self._provider = provider
 
-    def analyze(self, job: dict, profile: dict, log=None) -> AnalysisResult:
-        """Run two-call deep analysis for a single job.
+    def evaluate(self, job: dict, profile: dict, log=None) -> EvaluationResult:
+        """Run two-call deep evaluation for a single job.
 
         Input:
             job     — job dict from store (needs: company, title, description)
             profile — profile dict from ProfileLoader.load()
             log     — optional callable for task-drawer progress messages
 
-        Output: AnalysisResult with per-requirement evaluation + resume suggestions
+        Output: EvaluationResult with per-requirement evaluation + resume suggestions
         """
         from pipeline.profile import ProfileLoader
         loader = ProfileLoader()
@@ -183,7 +184,6 @@ class Analyzer:
         except (json.JSONDecodeError, ValueError):
             logger.warning("Failed to parse evaluation response: %s", raw2[:200])
 
-        # Normalize fit values
         for ev in evaluations:
             fit = str(ev.get("fit", "")).strip().capitalize()
             if fit not in ("Strong", "Partial", "Gap"):
@@ -195,7 +195,7 @@ class Analyzer:
                       for f in ("Strong", "Partial", "Gap")}
             log(f"  → Strong: {counts['Strong']}  Partial: {counts['Partial']}  Gap: {counts['Gap']}")
 
-        return AnalysisResult(
+        return EvaluationResult(
             requirements=evaluations,
             resume_suggestions=resume_suggestions,
         )

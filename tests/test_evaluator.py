@@ -1,9 +1,9 @@
-"""Unit tests for pipeline/analyzer.py."""
+"""Unit tests for pipeline/evaluator.py."""
 import json
 import pytest
 from unittest.mock import MagicMock, patch
 
-from pipeline.analyzer import Analyzer, AnalysisResult, _clean_json
+from pipeline.evaluator import JobEvaluator, EvaluationResult, _clean_json
 from pipeline.llm import LLMProvider
 
 
@@ -87,28 +87,28 @@ class TestCleanJson:
         assert _clean_json(raw).strip() == "[1, 2, 3]"
 
 
-# ── Analyzer.analyze — happy path ────────────────────────────────────────────
+# ── JobEvaluator.evaluate — happy path ──────────────────────────────────────
 
-class TestAnalyzerHappyPath:
+class TestJobEvaluatorHappyPath:
     def _run(self, extract_resp, evaluate_resp, job=None, profile=None):
         provider = make_mock_provider(extract_resp, evaluate_resp)
-        analyzer = Analyzer(provider)
+        evaluator = JobEvaluator(provider)
         with patch("pipeline.profile.ProfileLoader") as MockLoader:
             instance = MockLoader.return_value
             instance.full_text.return_value = "Experienced EM with 10 years."
-            return analyzer.analyze(
+            return evaluator.evaluate(
                 job or make_job(),
                 profile or make_profile(),
             )
 
-    def test_returns_analysis_result(self):
+    def test_returns_evaluation_result(self):
         extract = json.dumps(SAMPLE_REQUIREMENTS)
         evaluate = json.dumps({
             "evaluations": SAMPLE_EVALUATIONS,
             "resume_suggestions": SAMPLE_RESUME_SUGGESTIONS,
         })
         result = self._run(extract, evaluate)
-        assert isinstance(result, AnalysisResult)
+        assert isinstance(result, EvaluationResult)
 
     def test_requirements_count_matches_input(self):
         extract = json.dumps(SAMPLE_REQUIREMENTS)
@@ -147,10 +147,10 @@ class TestAnalyzerHappyPath:
             "resume_suggestions": [],
         })
         provider = make_mock_provider(extract, evaluate)
-        analyzer = Analyzer(provider)
+        evaluator = JobEvaluator(provider)
         with patch("pipeline.profile.ProfileLoader") as MockLoader:
             MockLoader.return_value.full_text.return_value = "profile text"
-            analyzer.analyze(make_job(), make_profile())
+            evaluator.evaluate(make_job(), make_profile())
         assert provider.complete_json.call_count == 2
 
     def test_markdown_fenced_responses_parsed(self):
@@ -169,12 +169,12 @@ class TestAnalyzerHappyPath:
             "resume_suggestions": [],
         })
         provider = make_mock_provider(extract, evaluate)
-        analyzer = Analyzer(provider)
+        evaluator = JobEvaluator(provider)
         log_calls = []
         with patch("pipeline.profile.ProfileLoader") as MockLoader:
             MockLoader.return_value.full_text.return_value = "profile"
-            analyzer.analyze(make_job(), make_profile(), log=log_calls.append)
-        assert len(log_calls) >= 3  # at least start, extraction count, evaluation count
+            evaluator.evaluate(make_job(), make_profile(), log=log_calls.append)
+        assert len(log_calls) >= 3
 
 
 # ── Fit normalization ────────────────────────────────────────────────────────
@@ -185,10 +185,10 @@ class TestFitNormalization:
             json.dumps(SAMPLE_REQUIREMENTS),
             json.dumps({"evaluations": evals, "resume_suggestions": []}),
         )
-        analyzer = Analyzer(provider)
+        evaluator = JobEvaluator(provider)
         with patch("pipeline.profile.ProfileLoader") as MockLoader:
             MockLoader.return_value.full_text.return_value = "profile"
-            return analyzer.analyze(make_job(), make_profile())
+            return evaluator.evaluate(make_job(), make_profile())
 
     def test_lowercase_fit_normalized(self):
         evals = [{"requirement": "x", "fit": "strong", "evidence": "e", "resume_suggestion": None}]
@@ -212,31 +212,31 @@ class TestFitNormalization:
 
 # ── Error handling ───────────────────────────────────────────────────────────
 
-class TestAnalyzerErrorHandling:
+class TestJobEvaluatorErrorHandling:
     def test_bad_extract_response_raises(self):
         provider = make_mock_provider("not json at all", "irrelevant")
-        analyzer = Analyzer(provider)
+        evaluator = JobEvaluator(provider)
         with patch("pipeline.profile.ProfileLoader") as MockLoader:
             MockLoader.return_value.full_text.return_value = "profile"
             with pytest.raises(ValueError, match="Could not extract requirements"):
-                analyzer.analyze(make_job(), make_profile())
+                evaluator.evaluate(make_job(), make_profile())
 
     def test_bad_evaluate_response_returns_empty(self):
         provider = make_mock_provider(
             json.dumps(SAMPLE_REQUIREMENTS),
             "this is not json",
         )
-        analyzer = Analyzer(provider)
+        evaluator = JobEvaluator(provider)
         with patch("pipeline.profile.ProfileLoader") as MockLoader:
             MockLoader.return_value.full_text.return_value = "profile"
-            result = analyzer.analyze(make_job(), make_profile())
+            result = evaluator.evaluate(make_job(), make_profile())
         assert result.requirements == []
         assert result.resume_suggestions == []
 
     def test_empty_requirements_list_raises(self):
         provider = make_mock_provider(json.dumps([]), "irrelevant")
-        analyzer = Analyzer(provider)
+        evaluator = JobEvaluator(provider)
         with patch("pipeline.profile.ProfileLoader") as MockLoader:
             MockLoader.return_value.full_text.return_value = "profile"
             with pytest.raises(ValueError):
-                analyzer.analyze(make_job(), make_profile())
+                evaluator.evaluate(make_job(), make_profile())

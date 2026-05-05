@@ -171,7 +171,7 @@ def bulk_update_status(body: BulkStatusUpdate, _=Depends(require_api_key)):
 
 # ── Per-job actions ───────────────────────────────────────────────────────────
 
-def _do_generate(log, company: str, job_id: str):
+def _do_generate_cover_letter(log, company: str, job_id: str):
     from pipeline.profile import ProfileLoader
     from pipeline.generator import ContentGenerator
     from pipeline.llm import create_provider
@@ -201,13 +201,13 @@ def _do_generate(log, company: str, job_id: str):
     return {"output_dir": result.output_dir}
 
 
-@app.post("/api/jobs/{company}/{job_id}/generate")
+@app.post("/api/jobs/{company}/{job_id}/generate-cover-letter")
 def generate_cover_letter(company: str, job_id: str, _=Depends(require_api_key)):
-    task_id = create_task(_do_generate, company, job_id)
+    task_id = create_task(_do_generate_cover_letter, company, job_id)
     return {"task_id": task_id}
 
 
-def _do_export(log, company: str, job_id: str):
+def _do_export_cover_letter_pdf(log, company: str, job_id: str):
     job_dir = os.path.join(OUTPUT_DIR, f"{company}_{job_id}")
     src = os.path.join(job_dir, "cover_letter.md")
     dst = os.path.join(job_dir, "cover_letter.pdf")
@@ -226,9 +226,9 @@ def _do_export(log, company: str, job_id: str):
     return {"pdf_path": f"/output/{company}_{job_id}/cover_letter.pdf"}
 
 
-@app.post("/api/jobs/{company}/{job_id}/export")
-def export_pdf(company: str, job_id: str, _=Depends(require_api_key)):
-    task_id = create_task(_do_export, company, job_id)
+@app.post("/api/jobs/{company}/{job_id}/export-cover-letter-pdf")
+def export_cover_letter_pdf(company: str, job_id: str, _=Depends(require_api_key)):
+    task_id = create_task(_do_export_cover_letter_pdf, company, job_id)
     return {"task_id": task_id}
 
 
@@ -271,35 +271,31 @@ def _resolve_companies(all_companies: list, group: Optional[str], company_filter
     return all_companies
 
 
-def _score_job_list(log, jobs: list, prefs: dict, provider, threshold: int, gen, loader) -> tuple:
-    """Score a list of jobs, generate materials for those above threshold. Returns (scored, generated)."""
-    from pipeline.matcher import MatchEngine
-    engine = MatchEngine(provider=provider)
-    scored = generated = 0
+def _score_job_list(log, jobs: list, prefs: dict, provider, threshold: int, loader) -> int:
+    """Score a list of jobs. Returns count of scored jobs."""
+    from pipeline.scorer import JobScorer
+    scorer = JobScorer(provider=provider)
+    scored = 0
     n = len(jobs)
     for i, job in enumerate(jobs, 1):
         company, job_id, title = job["company"], job["job_id"], job["title"]
         log(f"[{i}/{n}] Scoring: {company} — {title}")
         try:
             profile = loader.load(job=job)
-            result = engine.score(job, profile, prefs)
+            result = scorer.score(job, profile, prefs)
             store = JobStore(DB_PATH)
             store.set_match_score(company, job_id, result.adjusted_score, result.summary,
                                   strengths=result.strengths, gaps=result.gaps)
             scored += 1
             log(f"  → {result.adjusted_score}/10  {result.summary[:80]}")
             if result.meets_threshold(threshold):
-                log(f"  Generating materials...")
-                gen.generate(job, profile)
                 store.update_status(company, job_id, JobStatus.ALERTED)
-                generated += 1
-                log(f"  → saved to output/{company}_{job_id}/")
             else:
                 store.update_status(company, job_id, JobStatus.SKIPPED)
             store.close()
         except Exception as e:
             log(f"  ERROR: {e}")
-    return scored, generated
+    return scored
 
 
 def _do_run(log, group: str = None, company_filter: list = None, action: str = "source_and_score"):
@@ -314,7 +310,6 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
     company_filter: list of specific company names (overrides group)
     """
     from pipeline.fetcher import fetch_all_companies
-    from pipeline.generator import ContentGenerator
     from pipeline.profile import ProfileLoader
     from pipeline.llm import create_provider
 
@@ -326,7 +321,6 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
     group_label = group or "all"
     threshold = prefs.get("match_threshold", 7)
     provider = create_provider(prefs)
-    gen = ContentGenerator(provider=provider, output_dir=OUTPUT_DIR)
     loader = ProfileLoader(profile_dir=PROFILE_DIR,
                            google_docs_links=prefs.get("google_docs_links", []),
                            provider=provider)
@@ -339,7 +333,6 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
     fetched_all = []
     new_jobs = []
     scored = 0
-    generated = 0
     _run_error = None
 
     try:
@@ -358,7 +351,7 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
             log(f"Fetched {len(fetched_all)} matching jobs, {len(new_jobs)} new")
             if action == "source":
                 log(f"\nDone. Fetched: {len(fetched_all)}  New: {len(new_jobs)}")
-                return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": 0, "generated": 0}
+                return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": 0}
 
         # ── Determine jobs to score ───────────────────────────────────────────
         if action == "source_and_score":
@@ -380,11 +373,11 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
 
         if not jobs_to_score:
             log("Nothing to score.")
-            return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": 0, "generated": 0}
+            return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": 0}
 
-        scored, generated = _score_job_list(log, jobs_to_score, prefs, provider, threshold, gen, loader)
-        log(f"\nDone. Fetched: {len(fetched_all)}  New: {len(new_jobs)}  Scored: {scored}  Generated: {generated}")
-        return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": scored, "generated": generated}
+        scored = _score_job_list(log, jobs_to_score, prefs, provider, threshold, loader)
+        log(f"\nDone. Fetched: {len(fetched_all)}  New: {len(new_jobs)}  Scored: {scored}")
+        return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": scored}
 
     except Exception as exc:
         _run_error = str(exc)
@@ -397,7 +390,7 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
             jobs_fetched=len(fetched_all),
             jobs_new=len(new_jobs),
             jobs_scored=scored,
-            jobs_generated=generated,
+            jobs_generated=0,
             status="error" if _run_error else "done",
             error_msg=_run_error,
         )
@@ -406,7 +399,7 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
 
 def _do_rescore_job(log, company: str, job_id: str):
     """Rescore a single job and update its score/strengths/gaps in the DB."""
-    from pipeline.matcher import MatchEngine
+    from pipeline.scorer import JobScorer
     from pipeline.profile import ProfileLoader
     from pipeline.llm import create_provider
 
@@ -424,9 +417,9 @@ def _do_rescore_job(log, company: str, job_id: str):
     loader = ProfileLoader(profile_dir=PROFILE_DIR,
                            google_docs_links=prefs.get("google_docs_links", []),
                            provider=provider)
-    engine = MatchEngine(provider=provider)
+    scorer = JobScorer(provider=provider)
     profile = loader.load(job=job)
-    result = engine.score(job, profile, prefs)
+    result = scorer.score(job, profile, prefs)
 
     store2 = JobStore(DB_PATH)
     store2.set_match_score(company, job_id, result.adjusted_score, result.summary,
@@ -580,8 +573,8 @@ def list_runs(limit: int = 20, _=Depends(require_api_key)):
 
 
 def _do_analyze_job(log, company: str, job_id: str):
-    """Run two-call deep analysis for a single job and persist results."""
-    from pipeline.analyzer import Analyzer
+    """Run two-call deep evaluation for a single job and persist results."""
+    from pipeline.evaluator import JobEvaluator
     from pipeline.profile import ProfileLoader
     from pipeline.llm import create_provider
 
@@ -595,14 +588,14 @@ def _do_analyze_job(log, company: str, job_id: str):
     if not job:
         raise ValueError(f"Job not found: {company}/{job_id}")
 
-    log(f"Deep analysis: {job['company']} — {job['title']}")
+    log(f"Deep evaluation: {job['company']} — {job['title']}")
     loader = ProfileLoader(profile_dir=PROFILE_DIR,
                            google_docs_links=prefs.get("google_docs_links", []),
                            provider=provider)
     profile = loader.load(job=job)
 
-    analyzer = Analyzer(provider=provider)
-    result = analyzer.analyze(job, profile, log=log)
+    evaluator = JobEvaluator(provider=provider)
+    result = evaluator.evaluate(job, profile, log=log)
 
     store2 = JobStore(DB_PATH)
     store2.set_analysis(company, job_id, result.requirements, result.resume_suggestions)

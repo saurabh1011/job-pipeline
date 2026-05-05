@@ -1,12 +1,12 @@
-"""Match engine — scores a job against the candidate's profile using Claude.
+"""JobScorer — scores a job against the candidate's profile using an LLM.
 
 Input:
     job:         normalized job dict (from fetcher)
     profile:     profile dict (from ProfileLoader.load())
     preferences: preferences dict (from preferences.yaml)
 
-Output (MatchResult):
-    score:          int   — raw Claude score 1-10
+Output (ScoreResult):
+    score:          int   — raw LLM score 1-10
     adjusted_score: int   — score after location penalty
     location_penalty: int — penalty applied based on location
     summary:        str   — 2-3 sentence match rationale
@@ -31,11 +31,9 @@ def _parse_score(raw) -> int:
     Normalizes scores on a /5 scale to /10.
     """
     s = str(raw).strip()
-    # Extract first number (integer or float)
     m = re.search(r"(\d+(?:\.\d+)?)\s*/\s*(\d+)", s)
     if m:
         numerator, denominator = float(m.group(1)), float(m.group(2))
-        # Normalize to /10 scale
         score = round(numerator * 10 / denominator)
         return max(1, min(10, score))
     m = re.search(r"(\d+(?:\.\d+)?)", s)
@@ -76,7 +74,7 @@ Be concise. Return ONLY the JSON object, no other text."""
 
 
 @dataclass
-class MatchResult:
+class ScoreResult:
     score: int
     adjusted_score: int
     location_penalty: int
@@ -107,14 +105,14 @@ def _compute_location_penalty(location: str, preferences: dict) -> int:
     return penalties.get("other", 3)
 
 
-class MatchEngine:
+class JobScorer:
     def __init__(self, provider: LLMProvider):
         self._provider = provider
 
-    def _call_claude(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str) -> str:
         return self._provider.complete_json(prompt, max_tokens=1024)
 
-    def score(self, job: dict, profile: dict, preferences: dict) -> MatchResult:
+    def score(self, job: dict, profile: dict, preferences: dict) -> ScoreResult:
         from pipeline.profile import ProfileLoader
         loader = ProfileLoader()
         profile_text = loader.full_text(profile)
@@ -127,13 +125,12 @@ class MatchEngine:
             description=job.get("description", ""),
         )
 
-        raw = self._call_claude(prompt)
+        raw = self._call_llm(prompt)
         return self._parse_response(raw, job, preferences)
 
-    def _parse_response(self, raw: str, job: dict, preferences: dict) -> MatchResult:
+    def _parse_response(self, raw: str, job: dict, preferences: dict) -> ScoreResult:
         penalty = _compute_location_penalty(job.get("location", ""), preferences)
 
-        # Strip markdown fences if present (```json ... ``` or ``` ... ```)
         cleaned = re.sub(r"^```[a-z]*\s*", "", raw.strip(), flags=re.IGNORECASE)
         cleaned = re.sub(r"\s*```$", "", cleaned)
 
@@ -142,17 +139,15 @@ class MatchEngine:
             try:
                 data = json.loads(json_match.group())
 
-                # Accept alternative key names models may use
                 raw_score = (
                     data.get("score")
                     or data.get("match_score")
                     or data.get("rating")
                     or 1
                 )
-                # Handle "8/10", "4.5/5", floats, or plain integers
                 score = _parse_score(raw_score)
 
-                return MatchResult(
+                return ScoreResult(
                     score=score,
                     adjusted_score=max(1, score - penalty),
                     location_penalty=penalty,
@@ -164,9 +159,8 @@ class MatchEngine:
             except (json.JSONDecodeError, ValueError):
                 pass
 
-        # Fallback: could not parse
-        logger.warning("Could not parse match response: %s", raw[:200])
-        return MatchResult(
+        logger.warning("Could not parse score response: %s", raw[:200])
+        return ScoreResult(
             score=1,
             adjusted_score=max(1, 1 - penalty),
             location_penalty=penalty,

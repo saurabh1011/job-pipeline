@@ -59,13 +59,13 @@ class TestRunPipeline:
     def test_fetches_jobs_from_all_companies(self, mock_components):
         with patch("run.fetch_all_companies", return_value=SAMPLE_JOBS) as mock_fetch, \
              patch("run.JobStore", return_value=mock_components["store"]), \
-             patch("run.MatchEngine") as mock_engine_cls, \
+             patch("run.JobScorer") as mock_scorer_cls, \
              patch("run.ContentGenerator") as mock_gen_cls, \
              patch("run.GmailAlerter") as mock_alerter_cls, \
              patch("run.ProfileLoader") as mock_loader_cls, \
              patch("run.create_provider"), \
              patch("run.run_ingestion_for_pipeline", return_value={"processed": 0, "skipped": 0, "errors": 0, "copied": 0, "index_entries": 0}):
-            mock_engine_cls.return_value.score.return_value = mock_components["match_result"]
+            mock_scorer_cls.return_value.score.return_value = mock_components["match_result"]
             mock_gen_cls.return_value.generate.return_value = MagicMock()
             mock_loader_cls.return_value.load.return_value = {"resume": "test", "experience": "", "google_docs": ""}
             run_pipeline(SAMPLE_CONFIG, smtp_user="u", smtp_password="p", recipient="r@r.com")
@@ -74,13 +74,13 @@ class TestRunPipeline:
     def test_new_jobs_are_stored(self, mock_components):
         with patch("run.fetch_all_companies", return_value=SAMPLE_JOBS), \
              patch("run.JobStore", return_value=mock_components["store"]), \
-             patch("run.MatchEngine") as mock_engine_cls, \
+             patch("run.JobScorer") as mock_scorer_cls, \
              patch("run.ContentGenerator") as mock_gen_cls, \
              patch("run.GmailAlerter") as mock_alerter_cls, \
              patch("run.ProfileLoader") as mock_loader_cls, \
              patch("run.create_provider"), \
              patch("run.run_ingestion_for_pipeline", return_value={"processed": 0, "skipped": 0, "errors": 0, "copied": 0, "index_entries": 0}):
-            mock_engine_cls.return_value.score.return_value = mock_components["match_result"]
+            mock_scorer_cls.return_value.score.return_value = mock_components["match_result"]
             mock_gen_cls.return_value.generate.return_value = MagicMock()
             mock_loader_cls.return_value.load.return_value = {"resume": "test", "experience": "", "google_docs": ""}
             run_pipeline(SAMPLE_CONFIG, smtp_user="u", smtp_password="p", recipient="r@r.com")
@@ -91,7 +91,7 @@ class TestRunPipeline:
         mock_components["store"].upsert_job.return_value = False  # all duplicates
         with patch("run.fetch_all_companies", return_value=SAMPLE_JOBS), \
              patch("run.JobStore", return_value=mock_components["store"]), \
-             patch("run.MatchEngine") as mock_engine_cls, \
+             patch("run.JobScorer") as mock_scorer_cls, \
              patch("run.ContentGenerator") as mock_gen_cls, \
              patch("run.GmailAlerter") as mock_alerter_cls, \
              patch("run.ProfileLoader") as mock_loader_cls, \
@@ -99,18 +99,18 @@ class TestRunPipeline:
              patch("run.run_ingestion_for_pipeline", return_value={"processed": 0, "skipped": 0, "errors": 0, "copied": 0, "index_entries": 0}):
             mock_loader_cls.return_value.load.return_value = {"resume": "test", "experience": "", "google_docs": ""}
             run_pipeline(SAMPLE_CONFIG, smtp_user="u", smtp_password="p", recipient="r@r.com")
-        mock_engine_cls.return_value.score.assert_not_called()
+        mock_scorer_cls.return_value.score.assert_not_called()
 
     def test_high_match_jobs_generate_materials(self, mock_components):
         with patch("run.fetch_all_companies", return_value=SAMPLE_JOBS), \
              patch("run.JobStore", return_value=mock_components["store"]), \
-             patch("run.MatchEngine") as mock_engine_cls, \
+             patch("run.JobScorer") as mock_scorer_cls, \
              patch("run.ContentGenerator") as mock_gen_cls, \
              patch("run.GmailAlerter") as mock_alerter_cls, \
              patch("run.ProfileLoader") as mock_loader_cls, \
              patch("run.create_provider"), \
              patch("run.run_ingestion_for_pipeline", return_value={"processed": 0, "skipped": 0, "errors": 0, "copied": 0, "index_entries": 0}):
-            mock_engine_cls.return_value.score.return_value = mock_components["match_result"]
+            mock_scorer_cls.return_value.score.return_value = mock_components["match_result"]
             mock_gen_cls.return_value.generate.return_value = MagicMock()
             mock_loader_cls.return_value.load.return_value = {"resume": "test", "experience": "", "google_docs": ""}
             run_pipeline(SAMPLE_CONFIG, smtp_user="u", smtp_password="p", recipient="r@r.com")
@@ -125,13 +125,13 @@ class TestRunPipeline:
         low_result.meets_threshold.return_value = False
         with patch("run.fetch_all_companies", return_value=SAMPLE_JOBS), \
              patch("run.JobStore", return_value=mock_components["store"]), \
-             patch("run.MatchEngine") as mock_engine_cls, \
+             patch("run.JobScorer") as mock_scorer_cls, \
              patch("run.ContentGenerator") as mock_gen_cls, \
              patch("run.GmailAlerter") as mock_alerter_cls, \
              patch("run.ProfileLoader") as mock_loader_cls, \
              patch("run.create_provider"), \
              patch("run.run_ingestion_for_pipeline", return_value={"processed": 0, "skipped": 0, "errors": 0, "copied": 0, "index_entries": 0}):
-            mock_engine_cls.return_value.score.return_value = low_result
+            mock_scorer_cls.return_value.score.return_value = low_result
             mock_loader_cls.return_value.load.return_value = {"resume": "test", "experience": "", "google_docs": ""}
             run_pipeline(SAMPLE_CONFIG, smtp_user="u", smtp_password="p", recipient="r@r.com")
         mock_gen_cls.return_value.generate.assert_not_called()
@@ -139,13 +139,13 @@ class TestRunPipeline:
     def test_alert_sent_for_high_match_new_jobs(self, mock_components):
         with patch("run.fetch_all_companies", return_value=SAMPLE_JOBS), \
              patch("run.JobStore", return_value=mock_components["store"]), \
-             patch("run.MatchEngine") as mock_engine_cls, \
+             patch("run.JobScorer") as mock_scorer_cls, \
              patch("run.ContentGenerator") as mock_gen_cls, \
              patch("run.GmailAlerter") as mock_alerter_cls, \
              patch("run.ProfileLoader") as mock_loader_cls, \
              patch("run.create_provider"), \
              patch("run.run_ingestion_for_pipeline", return_value={"processed": 0, "skipped": 0, "errors": 0, "copied": 0, "index_entries": 0}):
-            mock_engine_cls.return_value.score.return_value = mock_components["match_result"]
+            mock_scorer_cls.return_value.score.return_value = mock_components["match_result"]
             mock_gen_cls.return_value.generate.return_value = MagicMock()
             mock_loader_cls.return_value.load.return_value = {"resume": "test", "experience": "", "google_docs": ""}
             run_pipeline(SAMPLE_CONFIG, smtp_user="u", smtp_password="p", recipient="r@r.com")

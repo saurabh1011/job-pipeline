@@ -407,7 +407,7 @@ const App = (() => {
     // Cover letter — editable textarea
     const clEl = document.getElementById("cover-letter-content");
     clEl.innerHTML = `
-      <textarea id="cover-letter-editor" class="cover-letter-editor" placeholder="No cover letter yet. Click Regenerate to create one, or type here and Save.">${_esc(job.cover_letter || "")}</textarea>
+      <textarea id="cover-letter-editor" class="cover-letter-editor" placeholder="No cover letter yet. Click Generate Cover Letter to create one, or type here and Save.">${_esc(job.cover_letter || "")}</textarea>
       <div class="cover-letter-save-bar">
         <button class="btn-primary btn-sm" onclick="App.saveCoverLetter()">Save</button>
         <span id="cover-letter-save-status" class="save-status"></span>
@@ -433,14 +433,14 @@ const App = (() => {
     const opts = ALL_STATUSES.map(s =>
       `<option value="${s.key}" ${s.key === job.status ? "selected" : ""}>${s.label}</option>`
     ).join("");
-    const pdfBtn = `<button class="btn-ghost" onclick="App.exportPDF()">Export PDF</button>`;
+    const pdfBtn = `<button class="btn-ghost" onclick="App.exportCoverLetterPdf()">Export PDF</button>`;
     const analyzeLabel = (job.match_requirements && job.match_requirements.length)
       ? "Re-analyze" : "Deep Analysis";
     return `
       <select class="status-select" onchange="App.setStatus(this.value)">${opts}</select>
       <button class="btn-ghost" onclick="App.rescore()">Rescore</button>
       <button class="btn-ghost" onclick="App.analyze()">${_esc(analyzeLabel)}</button>
-      <button class="btn-ghost" onclick="App.regenerate()">Regenerate</button>
+      <button class="btn-ghost" onclick="App.generateCoverLetter()">Generate Cover Letter</button>
       ${pdfBtn}`;
   }
 
@@ -513,17 +513,17 @@ const App = (() => {
     }
   }
 
-  async function regenerate() {
+  async function generateCoverLetter() {
     if (!_currentJob) return;
     const { company, job_id } = _currentJob;
-    const data = await _api("POST", `/api/jobs/${company}/${job_id}/generate`);
+    const data = await _api("POST", `/api/jobs/${company}/${job_id}/generate-cover-letter`);
     _startTask(data.task_id, "Generating cover letter...", () => openJob(company, job_id));
   }
 
-  async function exportPDF() {
+  async function exportCoverLetterPdf() {
     if (!_currentJob) return;
     const { company, job_id } = _currentJob;
-    const data = await _api("POST", `/api/jobs/${company}/${job_id}/export`);
+    const data = await _api("POST", `/api/jobs/${company}/${job_id}/export-cover-letter-pdf`);
     _startTask(data.task_id, "Exporting PDF...", () => {
       openJob(company, job_id);
       const a = document.createElement("a");
@@ -1015,7 +1015,7 @@ const App = (() => {
            setDateFilter,
            openDropdown, ddSearch,
            openJob, closeDetail, showTab,
-           setStatus, bulkStatusFromSelect, rescore, analyze, regenerate, exportPDF, saveCoverLetter,
+           setStatus, bulkStatusFromSelect, rescore, analyze, generateCoverLetter, exportCoverLetterPdf, saveCoverLetter,
            triggerRun,
            closeDrawer, submitApiKey,
            toggleSelectMode, toggleCheck, clearSelection, bulkStatus,

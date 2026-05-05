@@ -1,7 +1,7 @@
-"""Unit tests for the match engine and profile loader."""
+"""Unit tests for pipeline/scorer.py."""
 import pytest
 from unittest.mock import patch, MagicMock
-from pipeline.matcher import MatchEngine, MatchResult
+from pipeline.scorer import JobScorer, ScoreResult
 from pipeline.profile import ProfileLoader
 
 
@@ -51,7 +51,6 @@ class TestProfileLoader:
         with patch("pipeline.profile.requests.get") as mock_get:
             mock_get.return_value.raise_for_status.side_effect = Exception("403 Forbidden")
             profile = loader.load()
-        # Should not raise; google_docs may be empty or have error note
         assert "google_docs" in profile
 
     def test_full_profile_text_combines_all_sources(self, tmp_path):
@@ -64,9 +63,9 @@ class TestProfileLoader:
         assert "Experience text" in full
 
 
-# ── MatchEngine ───────────────────────────────────────────────────────────────
+# ── JobScorer ─────────────────────────────────────────────────────────────────
 
-MOCK_CLAUDE_RESPONSE = """{
+MOCK_LLM_RESPONSE = """{
   "score": 8,
   "summary": "Strong alignment on team leadership and distributed systems.",
   "strengths": ["Led teams of 20+", "Experience with infrastructure at scale"],
@@ -99,76 +98,71 @@ PREFERENCES = {
 
 
 @pytest.fixture
-def engine(mock_provider):
-    return MatchEngine(provider=mock_provider)
+def scorer(mock_provider):
+    return JobScorer(provider=mock_provider)
 
 
-class TestMatchEngine:
-    def test_returns_match_result(self, engine):
-        with patch.object(engine, "_call_claude", return_value=MOCK_CLAUDE_RESPONSE):
-            result = engine.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
-        assert isinstance(result, MatchResult)
+class TestJobScorer:
+    def test_returns_score_result(self, scorer):
+        with patch.object(scorer, "_call_llm", return_value=MOCK_LLM_RESPONSE):
+            result = scorer.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
+        assert isinstance(result, ScoreResult)
 
-    def test_score_extracted_correctly(self, engine):
-        with patch.object(engine, "_call_claude", return_value=MOCK_CLAUDE_RESPONSE):
-            result = engine.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
+    def test_score_extracted_correctly(self, scorer):
+        with patch.object(scorer, "_call_llm", return_value=MOCK_LLM_RESPONSE):
+            result = scorer.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
         assert result.score == 8
 
-    def test_summary_extracted_correctly(self, engine):
-        with patch.object(engine, "_call_claude", return_value=MOCK_CLAUDE_RESPONSE):
-            result = engine.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
+    def test_summary_extracted_correctly(self, scorer):
+        with patch.object(scorer, "_call_llm", return_value=MOCK_LLM_RESPONSE):
+            result = scorer.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
         assert "Strong alignment" in result.summary
 
-    def test_strengths_and_gaps_extracted(self, engine):
-        with patch.object(engine, "_call_claude", return_value=MOCK_CLAUDE_RESPONSE):
-            result = engine.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
+    def test_strengths_and_gaps_extracted(self, scorer):
+        with patch.object(scorer, "_call_llm", return_value=MOCK_LLM_RESPONSE):
+            result = scorer.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
         assert len(result.strengths) > 0
         assert len(result.gaps) > 0
 
-    def test_location_penalty_preferred(self, engine):
-        """NY job (preferred) should have 0 penalty."""
-        with patch.object(engine, "_call_claude", return_value=MOCK_CLAUDE_RESPONSE):
-            result = engine.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
+    def test_location_penalty_preferred(self, scorer):
+        with patch.object(scorer, "_call_llm", return_value=MOCK_LLM_RESPONSE):
+            result = scorer.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
         assert result.location_penalty == 0
         assert result.adjusted_score == result.score
 
-    def test_location_penalty_acceptable(self, engine):
-        """SF job (acceptable) should have penalty of 1."""
+    def test_location_penalty_acceptable(self, scorer):
         sf_job = {**SAMPLE_JOB, "location": "San Francisco, CA"}
-        with patch.object(engine, "_call_claude", return_value=MOCK_CLAUDE_RESPONSE):
-            result = engine.score(sf_job, SAMPLE_PROFILE, PREFERENCES)
+        with patch.object(scorer, "_call_llm", return_value=MOCK_LLM_RESPONSE):
+            result = scorer.score(sf_job, SAMPLE_PROFILE, PREFERENCES)
         assert result.location_penalty == 1
         assert result.adjusted_score == result.score - 1
 
-    def test_location_penalty_other(self, engine):
-        """Unknown location job should have penalty of 3."""
+    def test_location_penalty_other(self, scorer):
         other_job = {**SAMPLE_JOB, "location": "Denver, CO"}
-        with patch.object(engine, "_call_claude", return_value=MOCK_CLAUDE_RESPONSE):
-            result = engine.score(other_job, SAMPLE_PROFILE, PREFERENCES)
+        with patch.object(scorer, "_call_llm", return_value=MOCK_LLM_RESPONSE):
+            result = scorer.score(other_job, SAMPLE_PROFILE, PREFERENCES)
         assert result.location_penalty == 3
         assert result.adjusted_score == result.score - 3
 
-    def test_remote_job_has_no_penalty(self, engine):
-        """Remote jobs are treated as preferred."""
+    def test_remote_job_has_no_penalty(self, scorer):
         remote_job = {**SAMPLE_JOB, "location": "Remote"}
-        with patch.object(engine, "_call_claude", return_value=MOCK_CLAUDE_RESPONSE):
-            result = engine.score(remote_job, SAMPLE_PROFILE, PREFERENCES)
+        with patch.object(scorer, "_call_llm", return_value=MOCK_LLM_RESPONSE):
+            result = scorer.score(remote_job, SAMPLE_PROFILE, PREFERENCES)
         assert result.location_penalty == 0
 
-    def test_meets_threshold_true(self, engine):
-        with patch.object(engine, "_call_claude", return_value=MOCK_CLAUDE_RESPONSE):
-            result = engine.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
+    def test_meets_threshold_true(self, scorer):
+        with patch.object(scorer, "_call_llm", return_value=MOCK_LLM_RESPONSE):
+            result = scorer.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
         assert result.meets_threshold(threshold=7) is True
 
-    def test_meets_threshold_false(self, engine):
-        low_score_response = MOCK_CLAUDE_RESPONSE.replace('"score": 8', '"score": 5')
-        with patch.object(engine, "_call_claude", return_value=low_score_response):
-            result = engine.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
+    def test_meets_threshold_false(self, scorer):
+        low_score_response = MOCK_LLM_RESPONSE.replace('"score": 8', '"score": 5')
+        with patch.object(scorer, "_call_llm", return_value=low_score_response):
+            result = scorer.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
         assert result.meets_threshold(threshold=7) is False
 
-    def test_malformed_claude_response_returns_low_score(self, engine):
-        """If Claude returns non-JSON, gracefully return a low score."""
-        with patch.object(engine, "_call_claude", return_value="I cannot assess this."):
-            result = engine.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
+    def test_malformed_llm_response_returns_low_score(self, scorer):
+        with patch.object(scorer, "_call_llm", return_value="I cannot assess this."):
+            result = scorer.score(SAMPLE_JOB, SAMPLE_PROFILE, PREFERENCES)
         assert result.score <= 5
         assert result.summary != ""
