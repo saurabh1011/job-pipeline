@@ -433,9 +433,7 @@ const App = (() => {
     const opts = ALL_STATUSES.map(s =>
       `<option value="${s.key}" ${s.key === job.status ? "selected" : ""}>${s.label}</option>`
     ).join("");
-    const pdfBtn = job.pdf_path
-      ? `<a href="${job.pdf_path}" target="_blank"><button class="btn-ghost">Download PDF</button></a>`
-      : `<button class="btn-ghost" onclick="App.exportPDF()">Export PDF</button>`;
+    const pdfBtn = `<button class="btn-ghost" onclick="App.exportPDF()">Export PDF</button>`;
     const analyzeLabel = (job.match_requirements && job.match_requirements.length)
       ? "Re-analyze" : "Deep Analysis";
     return `
@@ -526,7 +524,10 @@ const App = (() => {
     if (!_currentJob) return;
     const { company, job_id } = _currentJob;
     const data = await _api("POST", `/api/jobs/${company}/${job_id}/export`);
-    _startTask(data.task_id, "Exporting PDF...", () => openJob(company, job_id));
+    _startTask(data.task_id, "Exporting PDF...", () => {
+      openJob(company, job_id);
+      window.open(`/output/${company}_${job_id}/cover_letter.pdf`, "_blank");
+    });
   }
 
   // ── Pipeline actions ──────────────────────────────────────────────────────
