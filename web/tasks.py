@@ -19,7 +19,7 @@ import requests
 _tasks: Dict[str, dict] = {}
 _lock = threading.Lock()
 
-_KEEPALIVE_INTERVAL = 120  # seconds between pings
+_KEEPALIVE_INTERVAL = 45  # seconds between pings — must be less than Fly's ~90s idle timeout
 _KEEPALIVE_URL = (
     f"https://{os.getenv('FLY_APP_NAME')}.fly.dev/"
     if os.getenv("FLY_APP_NAME")

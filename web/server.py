@@ -48,6 +48,16 @@ for _cfg_file in ["companies.yaml", "preferences.yaml"]:
 
 app = FastAPI(title="Job Application Pipeline", version="1.0.0")
 
+# On startup, mark any runs left in "running" state as "error" — they were
+# orphaned by a previous machine shutdown mid-task.
+_startup_store = JobStore(DB_PATH)
+_startup_store._conn.execute(
+    "UPDATE pipeline_runs SET status='error', error_msg='Server restarted mid-run' "
+    "WHERE status='running'"
+)
+_startup_store._conn.commit()
+_startup_store.close()
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
