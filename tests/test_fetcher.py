@@ -1,7 +1,11 @@
 """Unit tests for job fetchers."""
+import time
 import pytest
 from unittest.mock import patch, MagicMock
-from pipeline.fetcher import GreenhouseFetcher, UberFetcher, MicrosoftFetcher, fetch_all_companies
+from pipeline.fetcher import (
+    GreenhouseFetcher, UberFetcher, MicrosoftFetcher, fetch_all_companies,
+    _matches_location, _build_company_prefs,
+)
 import yaml
 
 
@@ -414,3 +418,130 @@ class TestMicrosoftFetcher:
             jobs = ms_fetcher.fetch(PREFERENCES)
         assert len(jobs) == 1
         assert jobs[0]["description"] == ""
+
+
+# ── _matches_location with location_filter ────────────────────────────────────
+
+class TestMatchesLocationFilter:
+    def test_passes_when_no_filter(self):
+        assert _matches_location("New York, NY", {}) is True
+        assert _matches_location("Seattle, WA", {}) is True
+
+    def test_passes_when_location_matches_filter(self):
+        prefs = {"location_filter": ["new york", "remote"]}
+        assert _matches_location("New York, NY", prefs) is True
+        assert _matches_location("Remote", prefs) is True
+
+    def test_fails_when_location_not_in_filter(self):
+        prefs = {"location_filter": ["new york", "remote"]}
+        assert _matches_location("San Francisco, CA", prefs) is False
+        assert _matches_location("Seattle, WA", prefs) is False
+
+    def test_filter_is_case_insensitive(self):
+        prefs = {"location_filter": ["New York"]}
+        assert _matches_location("new york, ny", prefs) is True
+
+    def test_filter_and_excluded_both_apply(self):
+        prefs = {"location_filter": ["new york", "remote"], "excluded_location_keywords": ["canada"]}
+        assert _matches_location("New York, NY", prefs) is True
+        assert _matches_location("Remote, Canada", prefs) is False  # excluded denylist wins
+
+    def test_empty_filter_list_does_not_restrict(self):
+        prefs = {"location_filter": []}
+        assert _matches_location("San Francisco, CA", prefs) is True
+
+
+# ── _build_company_prefs ──────────────────────────────────────────────────────
+
+class TestBuildCompanyPrefs:
+    def test_returns_copy_of_global_prefs(self):
+        global_prefs = {"title_keywords": ["Engineering Manager"], "us_only": True}
+        result = _build_company_prefs({}, global_prefs)
+        assert result == global_prefs
+        result["title_keywords"].append("extra")
+        assert "extra" not in global_prefs["title_keywords"]
+
+    def test_overrides_title_keywords(self):
+        global_prefs = {"title_keywords": ["Engineering Manager"]}
+        company = {"title_keywords": ["Senior Engineering Manager", "Director of Engineering"]}
+        result = _build_company_prefs(company, global_prefs)
+        assert result["title_keywords"] == ["Senior Engineering Manager", "Director of Engineering"]
+
+    def test_adds_location_filter(self):
+        global_prefs = {"title_keywords": ["Engineering Manager"]}
+        company = {"location_filter": ["new york", "remote"]}
+        result = _build_company_prefs(company, global_prefs)
+        assert result["location_filter"] == ["new york", "remote"]
+
+    def test_global_prefs_unchanged_when_company_has_overrides(self):
+        global_prefs = {"title_keywords": ["Engineering Manager"]}
+        company = {"title_keywords": ["Director"], "location_filter": ["remote"]}
+        _build_company_prefs(company, global_prefs)
+        assert global_prefs == {"title_keywords": ["Engineering Manager"]}
+        assert "location_filter" not in global_prefs
+
+    def test_preserves_other_global_prefs_fields(self):
+        global_prefs = {"title_keywords": ["EM"], "us_only": True, "match_threshold": 8}
+        company = {"title_keywords": ["Director"]}
+        result = _build_company_prefs(company, global_prefs)
+        assert result["us_only"] is True
+        assert result["match_threshold"] == 8
+
+
+# ── fetch_all_companies — per-company timeout ─────────────────────────────────
+
+class TestFetchAllCompaniesTimeout:
+    def test_skips_company_that_exceeds_timeout(self):
+        def slow_fetch(prefs):
+            time.sleep(5)
+            return [{"job_id": "1", "company": "Slow", "title": "EM", "location": "NY",
+                     "url": "https://x.com", "apply_url": "https://x.com", "description": ""}]
+
+        slow_company = {"name": "SlowCo", "ats": "greenhouse", "board_slug": "slowco", "fetch_timeout": 1}
+        fast_company = {"name": "Stripe", "ats": "greenhouse", "board_slug": "stripe"}
+
+        logs = []
+
+        with patch("pipeline.fetcher.requests.get") as mock_get:
+            mock_get.return_value.json.return_value = {
+                "jobs": [{
+                    "id": 99, "title": "Engineering Manager", "location": {"name": "New York, NY"},
+                    "absolute_url": "https://boards.greenhouse.io/stripe/jobs/99",
+                    "content": "Description", "updated_at": "2026-04-14T00:00:00Z",
+                }]
+            }
+            mock_get.return_value.raise_for_status = MagicMock()
+            with patch("pipeline.fetcher.GreenhouseFetcher.fetch", side_effect=slow_fetch):
+                jobs = fetch_all_companies([slow_company], PREFERENCES, log=logs.append)
+
+        assert jobs == []
+        assert any("TIMEOUT" in msg for msg in logs)
+
+    def test_company_specific_title_keywords_passed_to_fetcher(self):
+        captured_prefs = {}
+
+        def capture_fetch(prefs):
+            captured_prefs.update(prefs)
+            return []
+
+        company = {
+            "name": "Zillow", "ats": "zillow",
+            "title_keywords": ["Senior Engineering Manager", "Director of Engineering"],
+        }
+        with patch("pipeline.fetcher.ZillowFetcher.fetch", side_effect=capture_fetch):
+            fetch_all_companies([company], PREFERENCES)
+
+        assert captured_prefs["title_keywords"] == ["Senior Engineering Manager", "Director of Engineering"]
+
+    def test_global_title_keywords_used_when_no_override(self):
+        captured_prefs = {}
+
+        def capture_fetch(prefs):
+            captured_prefs.update(prefs)
+            return []
+
+        company = {"name": "Stripe", "ats": "greenhouse", "board_slug": "stripe"}
+        with patch("pipeline.fetcher.GreenhouseFetcher.fetch", side_effect=capture_fetch):
+            fetch_all_companies([company], PREFERENCES)
+
+        assert captured_prefs["title_keywords"] == PREFERENCES["title_keywords"]

@@ -123,9 +123,24 @@ companies:
 
   - name: Zillow
     ats: zillow
+    fetch_timeout: 60
+    title_keywords:
+      - "Senior Engineering Manager"
+      - "Director of Engineering"
+      - "Engineering Director"
+    location_filter:
+      - "new york"
+      - "remote"
+      - "seattle"
 
   - name: Amazon
     ats: amazon
+    fetch_timeout: 90
+    title_keywords:
+      - "Senior Engineering Manager"
+      - "Director of Engineering"
+      - "Engineering Director"
+      - "Senior Software Development Manager"
 
   # ── LinkedIn (jobs at LinkedIn Inc. only) ───────────────────────────────────
   - name: LinkedIn

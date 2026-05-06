@@ -11,8 +11,10 @@ Each fetcher.fetch(preferences) returns a list of normalized job dicts:
         description: str  — plain-text job description (HTML stripped)
     }
 """
+import copy
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from typing import List, Dict, Any
@@ -51,18 +53,35 @@ def _matches_title(title: str, preferences: dict) -> bool:
 def _matches_location(location: str, preferences: dict) -> bool:
     """Return False if the location is excluded or violates us_only.
 
+    location_filter: allowlist — if set, location must contain at least one term.
+    excluded_location_keywords: denylist — location must not contain any term.
     us_only: rejects locations formatted as "CC, ..." where CC is a
     2-letter country code that is not US (Amazon-style location strings).
-    Excluded location keywords are dropped unconditionally.
     """
-    excluded = [kw.lower() for kw in preferences.get("excluded_location_keywords", [])]
     location_lower = location.lower()
+    location_filter = [kw.lower() for kw in preferences.get("location_filter", [])]
+    if location_filter and not any(kw in location_lower for kw in location_filter):
+        return False
+    excluded = [kw.lower() for kw in preferences.get("excluded_location_keywords", [])]
     if excluded and any(kw in location_lower for kw in excluded):
         return False
     if preferences.get("us_only", False):
         if re.match(r'^[A-Z]{2},\s', location) and not location.startswith("US,"):
             return False
     return True
+
+
+def _build_company_prefs(company: dict, global_prefs: dict) -> dict:
+    """Return a deep copy of global_prefs with company-level overrides applied.
+
+    Supported overrides: title_keywords, location_filter.
+    """
+    prefs = copy.deepcopy(global_prefs)
+    if "title_keywords" in company:
+        prefs["title_keywords"] = list(company["title_keywords"])
+    if "location_filter" in company:
+        prefs["location_filter"] = list(company["location_filter"])
+    return prefs
 
 
 class GreenhouseFetcher:
@@ -443,6 +462,7 @@ class ZillowFetcher:
     _LIST_URL = "https://zillow.wd5.myworkdayjobs.com/wday/cxs/zillow/Zillow_Group_External/jobs"
     _DETAIL_BASE = "https://zillow.wd5.myworkdayjobs.com/wday/cxs/zillow/Zillow_Group_External"
     _PAGE_SIZE = 20
+    _MAX_PAGES = 3  # cap at 60 results per keyword to avoid rate-limit hangs
 
     def __init__(self, company_name: str = "Zillow"):
         self.company_name = company_name
@@ -452,14 +472,15 @@ class ZillowFetcher:
         candidates = []
         for keyword in preferences.get("title_keywords", ["Engineering Manager"]):
             offset = 0
-            while True:
+            page = 0
+            while page < self._MAX_PAGES:
                 try:
                     resp = requests.post(
                         self._LIST_URL,
                         json={"limit": self._PAGE_SIZE, "offset": offset, "searchText": keyword},
                         headers={"User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)",
                                  "Content-Type": "application/json", "Accept": "application/json"},
-                        timeout=15,
+                        timeout=8,
                     )
                     resp.raise_for_status()
                 except Exception as exc:
@@ -490,6 +511,7 @@ class ZillowFetcher:
                 if len(postings) < self._PAGE_SIZE:
                     break
                 offset += self._PAGE_SIZE
+                page += 1
 
         results = []
         for c in candidates:
@@ -498,7 +520,7 @@ class ZillowFetcher:
                     f"{self._DETAIL_BASE}{c['ext_path']}",
                     headers={"User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)",
                              "Accept": "application/json"},
-                    timeout=15,
+                    timeout=8,
                 )
                 detail.raise_for_status()
                 info = detail.json().get("jobPostingInfo", {})
@@ -981,6 +1003,7 @@ def fetch_all_companies(companies_config: List[dict], preferences: dict, log=Non
         if fetcher_cls is None:
             _log(f"[{i}/{http_total}] SKIP {name} — no fetcher for ATS '{ats}'")
             continue
+        company_prefs = _build_company_prefs(company, preferences)
         if ats == "lever":
             fetcher = fetcher_cls(board_slug=company["board_slug"], company_name=name,
                                   department=company.get("department"))
@@ -990,22 +1013,36 @@ def fetch_all_companies(companies_config: List[dict], preferences: dict, log=Non
             fetcher = fetcher_cls(company_name=name, company_id=company.get("company_id", ""))
         else:
             fetcher = fetcher_cls(company_name=name)
+        fetch_timeout = company.get("fetch_timeout", 60)
         _log(f"[{i}/{http_total}] Fetching {name} ({ats})...")
         t0 = time.time()
-        try:
-            jobs = fetcher.fetch(preferences)
-        except Exception as exc:
-            _log(f"  ERROR: {exc}")
-            jobs = []
+        result_holder: Dict[str, Any] = {"jobs": [], "exc": None}
+
+        def _fetch(f=fetcher, p=company_prefs, h=result_holder):
+            try:
+                h["jobs"] = f.fetch(p)
+            except Exception as exc:
+                h["exc"] = exc
+
+        thread = threading.Thread(target=_fetch, daemon=True)
+        thread.start()
+        thread.join(timeout=fetch_timeout)
         elapsed = time.time() - t0
-        _log(f"  → {len(jobs)} matching jobs ({elapsed:.1f}s)")
+        if thread.is_alive():
+            _log(f"  TIMEOUT after {fetch_timeout}s — skipping {name}")
+            jobs = []
+        elif result_holder["exc"]:
+            _log(f"  ERROR: {result_holder['exc']}")
+            jobs = []
+        else:
+            jobs = result_holder["jobs"]
+            _log(f"  → {len(jobs)} matching jobs ({elapsed:.1f}s)")
         all_jobs.extend(jobs)
 
     if playwright_companies:
         from playwright.sync_api import sync_playwright
         from pipeline.playwright_fetcher import _PLAYWRIGHT_FETCHER_MAP
 
-        _log = log or (lambda msg: logger.info(msg))
         with sync_playwright() as pw:
             for company in playwright_companies:
                 ats = company.get("ats")
@@ -1014,6 +1051,7 @@ def fetch_all_companies(companies_config: List[dict], preferences: dict, log=Non
                     logger.warning("No Playwright fetcher for ATS '%s' (company: %s)",
                                    ats, company.get("name"))
                     continue
+                company_prefs = _build_company_prefs(company, preferences)
                 fetcher = fetcher_cls(company_name=company["name"])
                 # Launch a fresh browser per company so memory is freed between runs.
                 browser = pw.chromium.launch(headless=True)
@@ -1023,7 +1061,7 @@ def fetch_all_companies(companies_config: List[dict], preferences: dict, log=Non
                         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                     ))
                     try:
-                        jobs = fetcher.fetch(preferences, page, log=log)
+                        jobs = fetcher.fetch(company_prefs, page, log=log)
                         all_jobs.extend(jobs)
                     finally:
                         page.close()
