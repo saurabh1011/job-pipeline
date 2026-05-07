@@ -17,6 +17,7 @@ import logging
 import re
 from typing import List
 
+import requests
 from playwright.sync_api import Page
 
 from pipeline.fetcher import _matches_title, _matches_location, _strip_html
@@ -161,64 +162,65 @@ class ApplePlaywrightFetcher:
         logger.info("Apple: %d matching jobs found", len(results))
         return results
 
-    def _fetch_keyword(self, keyword: str, preferences: dict, page: Page) -> List[dict]:
-        try:
-            page.goto(f"{self._SEARCH}?q={keyword.replace(' ', '+')}&sort=Latest",
-                      timeout=25000)
-            page.wait_for_timeout(4000)
-        except Exception as exc:
-            logger.warning("Apple page load failed for '%s': %s", keyword, exc)
-            return []
+    _API_URL = "https://jobs.apple.com/api/v1/search"
+    _API_HEADERS = {
+        "User-Agent": _UA,
+        "Content-Type": "application/json",
+        "Referer": "https://jobs.apple.com/en-us/search",
+        "Origin": "https://jobs.apple.com",
+    }
 
+    def _fetch_keyword(self, keyword: str, preferences: dict, page: Page) -> List[dict]:
         candidates = []
         seen_ids: set = set()
 
-        for _ in range(self._MAX_PAGES):
-            for link in page.query_selector_all("a[href*='/en-us/details/']"):
-                href = link.get_attribute("href") or ""
-                # Extract job ID: /en-us/details/{id}/{slug}
-                id_match = re.search(r"/details/([^/]+)/", href)
-                if not id_match:
-                    continue
-                job_id = id_match.group(1)
-                if job_id in seen_ids:
-                    continue
+        for page_num in range(1, self._MAX_PAGES + 1):
+            try:
+                resp = requests.post(
+                    self._API_URL,
+                    json={
+                        "query": "",
+                        "filters": {
+                            "keywords": [keyword],
+                            "locations": ["postLocation-USA"],
+                        },
+                        "page": page_num,
+                        "locale": "en-us",
+                        "sort": "",
+                        "format": {"longDate": "MMMM D, YYYY", "mediumDate": "MMM D, YYYY"},
+                    },
+                    headers=self._API_HEADERS,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+            except Exception as exc:
+                logger.warning("Apple API search failed for '%s' page %d: %s", keyword, page_num, exc)
+                break
 
-                title = link.inner_text().strip()
-                if not title or not _matches_title(title, preferences):
+            search_results = resp.json().get("res", {}).get("searchResults", [])
+            if not search_results:
+                break
+
+            for job in search_results:
+                job_id = job.get("id", "")
+                if not job_id or job_id in seen_ids:
                     continue
-
-                # Location: look in the parent card element
-                location = ""
-                try:
-                    card_text = page.evaluate(
-                        "(el) => el.closest('li, [role=\"listitem\"], .table-col-1')?.innerText || ''",
-                        link,
-                    )
-                    loc_match = re.search(r"Location\s*\n(.+)", card_text or "")
-                    if loc_match:
-                        location = loc_match.group(1).strip()
-                except Exception:
-                    pass
-
+                title = job.get("postingTitle", "")
+                if not _matches_title(title, preferences):
+                    continue
+                location = ", ".join(
+                    loc.get("name", "") for loc in job.get("locations", [])
+                )
                 if not _matches_location(location, preferences):
                     logger.debug("Apple excluded by location: %s — %s", title, location)
                     continue
-
                 seen_ids.add(job_id)
-                job_url = f"https://jobs.apple.com{href.split('?')[0]}"
-                candidates.append({"job_id": job_id, "title": title,
-                                   "location": location, "url": job_url})
-
-            # Try to go to next page
-            next_btn = page.query_selector("a[aria-label='Next Page'], button[aria-label='Next']")
-            if not next_btn:
-                break
-            try:
-                next_btn.click()
-                page.wait_for_timeout(3000)
-            except Exception:
-                break
+                candidates.append({
+                    "job_id": job_id,
+                    "title": title,
+                    "location": location,
+                    "url": f"https://jobs.apple.com/en-us/details/{job_id}",
+                })
 
         results = []
         for c in candidates:

@@ -136,64 +136,75 @@ class TestGooglePlaywrightFetcher:
 
 # ── ApplePlaywrightFetcher ─────────────────────────────────────────────────────
 
+def _apple_api_response(jobs):
+    """Build a mock Apple API response for the given job dicts."""
+    return {
+        "res": {
+            "searchResults": [
+                {
+                    "id": j["id"],
+                    "postingTitle": j["title"],
+                    "locations": [{"name": j["location"]}],
+                }
+                for j in jobs
+            ],
+            "totalRecords": len(jobs),
+        }
+    }
+
+
 class TestApplePlaywrightFetcher:
-    def _make_link(self, href, title, location, team="Software Engineering"):
-        link = MagicMock()
-        link.get_attribute.return_value = href
-        link.inner_text.return_value = title
-        parent = MagicMock()
-        loc_el = _el(location)
-        def qs(sel):
-            if "location" in sel.lower() or "span" in sel.lower():
-                return loc_el
-            return None
-        parent.query_selector.side_effect = qs
-        parent.inner_text.return_value = f"{title}\n{team}\nApr 20, 2026\nLocation\n{location}"
-        link.evaluate.return_value = parent
-        return link
+    def _mock_api(self, jobs, empty_page=2):
+        """Return a requests.post side_effect that returns jobs on page 1, empty on page 2+."""
+        def side_effect(url, json=None, **kwargs):
+            page_num = (json or {}).get("page", 1)
+            mock = MagicMock()
+            mock.raise_for_status = MagicMock()
+            mock.json.return_value = _apple_api_response(jobs) if page_num == 1 else {"res": {"searchResults": []}}
+            return mock
+        return side_effect
 
     def test_filters_by_title(self):
-        link1 = self._make_link("/en-us/details/100/engineering-manager?team=SFTWR",
-                                "Engineering Manager, Siri", "New York, NY")
-        link2 = self._make_link("/en-us/details/200/software-engineer?team=SFTWR",
-                                "Software Engineer, iOS", "Cupertino, CA")
+        api_jobs = [
+            {"id": "100", "title": "Engineering Manager, Siri", "location": "New York, NY"},
+            {"id": "200", "title": "Software Engineer, iOS", "location": "Cupertino, CA"},
+        ]
         page = _mock_page()
-        page.query_selector_all.return_value = [link1, link2]
         fetcher = ApplePlaywrightFetcher()
-        with patch.object(fetcher, "_get_description", return_value=""):
-            jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
+        with patch("pipeline.playwright_fetcher.requests.post", side_effect=self._mock_api(api_jobs)):
+            with patch.object(fetcher, "_get_description", return_value=""):
+                jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
         assert len(jobs) == 1
         assert jobs[0]["title"] == "Engineering Manager, Siri"
 
-    def test_extracts_job_id_from_href(self):
-        link = self._make_link("/en-us/details/ABC123/engineering-manager?team=SFTWR",
-                               "Engineering Manager, Maps", "Seattle, WA")
+    def test_extracts_job_id(self):
+        api_jobs = [{"id": "ABC123", "title": "Engineering Manager, Maps", "location": "Seattle, WA"}]
         page = _mock_page()
-        page.query_selector_all.return_value = [link]
         fetcher = ApplePlaywrightFetcher()
-        with patch.object(fetcher, "_get_description", return_value=""):
-            jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
+        with patch("pipeline.playwright_fetcher.requests.post", side_effect=self._mock_api(api_jobs)):
+            with patch.object(fetcher, "_get_description", return_value=""):
+                jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
         assert jobs[0]["job_id"] == "ABC123"
 
-    def test_returns_empty_on_page_load_failure(self):
+    def test_returns_empty_on_api_failure(self):
         page = _mock_page()
-        page.goto.side_effect = Exception("Timeout")
         fetcher = ApplePlaywrightFetcher()
-        jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
+        with patch("pipeline.playwright_fetcher.requests.post", side_effect=Exception("Connection error")):
+            jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
         assert jobs == []
 
     def test_returns_normalized_job_dict(self):
-        link = self._make_link("/en-us/details/XYZ/eng-manager?team=SFTWR",
-                               "Engineering Manager, AI", "Remote")
+        api_jobs = [{"id": "XYZ", "title": "Engineering Manager, AI", "location": "Remote"}]
         page = _mock_page()
-        page.query_selector_all.return_value = [link]
         fetcher = ApplePlaywrightFetcher()
-        with patch.object(fetcher, "_get_description", return_value="jd"):
-            jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
+        with patch("pipeline.playwright_fetcher.requests.post", side_effect=self._mock_api(api_jobs)):
+            with patch.object(fetcher, "_get_description", return_value="jd"):
+                jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
         job = jobs[0]
         for key in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
             assert key in job
         assert job["company"] == "Apple"
+        assert job["url"] == "https://jobs.apple.com/en-us/details/XYZ"
 
 
 # ── MetaPlaywrightFetcher ──────────────────────────────────────────────────────
