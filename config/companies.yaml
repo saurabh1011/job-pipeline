@@ -21,6 +21,10 @@ companies:
 
   - name: Walmart
     ats: walmart
+    title_keywords:
+      - "Manager, Software Engineering"
+      - "Director, Software Engineering"
+      - "Director, Engineering"
 
   # ── Greenhouse ──────────────────────────────────────────────────────────────
   - name: DoorDash

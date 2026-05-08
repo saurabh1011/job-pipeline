@@ -266,7 +266,7 @@ def update_cover_letter(company: str, job_id: str, body: CoverLetterUpdate, _=De
 
 # ── Pipeline actions ──────────────────────────────────────────────────────────
 
-_PLAYWRIGHT_ATS = {"google", "apple", "meta", "walmart"}
+_PLAYWRIGHT_ATS = {"google", "apple", "meta"}
 
 
 def _resolve_companies(all_companies: list, group: Optional[str], company_filter: Optional[List[str]]) -> list:

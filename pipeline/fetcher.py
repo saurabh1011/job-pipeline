@@ -854,6 +854,92 @@ class LeverFetcher:
         return results
 
 
+class WalmartFetcher:
+    """Fetches EM-equivalent roles from Walmart Global Tech via the careers hybrid-search API.
+
+    Walmart uses the naming convention "Senior Manager, Software Engineering"
+    instead of "Engineering Manager" — configure company-level title_keywords
+    in companies.yaml to match their titles.
+
+    Search: POST https://careers.walmart.com/api/ai/search-ai/api/v1/combined/hybrid-search
+    Job description is embedded in the search response text field (no detail fetch needed).
+    """
+
+    _SEARCH_URL = (
+        "https://careers.walmart.com/api/ai/search-ai/api/v1/combined/hybrid-search"
+    )
+    _SEARCH_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Content-Type": "application/json",
+        "Referer": "https://careers.walmart.com/us/en/results",
+        "Origin": "https://careers.walmart.com",
+    }
+    _PAGE_SIZE = 100
+    _MAX_PAGES = 5
+
+    def __init__(self, company_name: str = "Walmart"):
+        self.company_name = company_name
+
+    def fetch(self, preferences: dict) -> List[dict]:
+        seen_ids: set = set()
+        results = []
+        for keyword in preferences.get("title_keywords", ["Engineering Manager"]):
+            for page_num in range(self._MAX_PAGES):
+                try:
+                    resp = requests.post(
+                        self._SEARCH_URL,
+                        params={"page": page_num, "size": self._PAGE_SIZE, "locale": "en_US"},
+                        json={"query": keyword, "basicSearch": False,
+                              "filter": "", "locale": "en_US"},
+                        headers=self._SEARCH_HEADERS,
+                        timeout=20,
+                    )
+                    resp.raise_for_status()
+                except Exception as exc:
+                    logger.warning("Walmart search failed for '%s' page %d: %s", keyword, page_num, exc)
+                    break
+
+                data = resp.json()
+                jobs = data.get("jobs") or []
+                if not jobs:
+                    break
+
+                for job in jobs:
+                    job_id = job.get("id", "")
+                    if not job_id or job_id in seen_ids:
+                        continue
+                    meta = job.get("metadata") or {}
+                    title = meta.get("title", "")
+                    if not title or not _matches_title(title, preferences):
+                        continue
+                    city = (meta.get("primaryLocationCity") or "").title()
+                    location = city
+                    if not _matches_location(location, preferences):
+                        logger.debug("Walmart excluded by location: %s — %s", title, location)
+                        continue
+                    text = job.get("text", "")
+                    desc_match = re.search(r"Job Posting Description:\s*(.+)", text, re.DOTALL)
+                    description = desc_match.group(1).strip() if desc_match else text
+                    seen_ids.add(job_id)
+                    job_url = f"https://careers.walmart.com/us/jobs/{job_id}/job"
+                    results.append({
+                        "job_id": job_id,
+                        "company": self.company_name,
+                        "title": title,
+                        "location": location,
+                        "url": job_url,
+                        "apply_url": job_url,
+                        "description": description,
+                    })
+
+                if len(jobs) < self._PAGE_SIZE:
+                    break
+
+        logger.info("Walmart: %d matching jobs found", len(results))
+        return results
+
+
 class LinkedInFetcher:
     """Fetches matching jobs from LinkedIn's public guest API (no auth required).
 
@@ -973,10 +1059,11 @@ _FETCHER_MAP = {
     "amazon": AmazonFetcher,
     "uber": UberFetcher,
     "microsoft": MicrosoftFetcher,
+    "walmart": WalmartFetcher,
     "linkedin": LinkedInFetcher,
 }
 
-_PLAYWRIGHT_ATS = {"google", "apple", "meta", "walmart"}
+_PLAYWRIGHT_ATS = {"google", "apple", "meta"}
 
 
 def fetch_all_companies(companies_config: List[dict], preferences: dict, log=None) -> List[dict]:

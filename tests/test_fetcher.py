@@ -3,8 +3,8 @@ import time
 import pytest
 from unittest.mock import patch, MagicMock
 from pipeline.fetcher import (
-    GreenhouseFetcher, UberFetcher, MicrosoftFetcher, fetch_all_companies,
-    _matches_location, _build_company_prefs,
+    GreenhouseFetcher, UberFetcher, MicrosoftFetcher, WalmartFetcher,
+    fetch_all_companies, _matches_location, _build_company_prefs,
 )
 import yaml
 
@@ -545,3 +545,166 @@ class TestFetchAllCompaniesTimeout:
             fetch_all_companies([company], PREFERENCES)
 
         assert captured_prefs["title_keywords"] == PREFERENCES["title_keywords"]
+
+
+# ── WalmartFetcher ────────────────────────────────────────────────────────────
+
+def _walmart_search_response(jobs, total=None):
+    return {"jobs": jobs, "totalCount": total or len(jobs)}
+
+
+def _walmart_job(job_id="w001", title="Senior Manager, Software Engineering",
+                 city="San Bruno", text="Job Posting Description: Lead teams.\nLocation: San Bruno, CA"):
+    return {
+        "id": job_id,
+        "metadata": {"title": title, "primaryLocationCity": city},
+        "text": text,
+    }
+
+
+WALMART_PREFS = {
+    "title_keywords": ["Manager, Software Engineering"],
+    "title_exclude_keywords": ["Warehouse", "Hourly"],
+    "excluded_location_keywords": [],
+}
+
+
+class TestWalmartFetcher:
+    def test_filters_by_title(self):
+        matching = _walmart_job(title="Senior Manager, Software Engineering")
+        non_matching = _walmart_job(job_id="w002", title="Warehouse Associate")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = _walmart_search_response([matching, non_matching])
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.post", return_value=mock_resp):
+            jobs = WalmartFetcher().fetch(WALMART_PREFS)
+        titles = [j["title"] for j in jobs]
+        assert "Senior Manager, Software Engineering" in titles
+        assert "Warehouse Associate" not in titles
+
+    def test_returns_normalized_job_dict(self):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = _walmart_search_response([_walmart_job()])
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.post", return_value=mock_resp):
+            jobs = WalmartFetcher().fetch(WALMART_PREFS)
+        assert len(jobs) == 1
+        job = jobs[0]
+        for key in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
+            assert key in job
+        assert job["company"] == "Walmart"
+        assert job["url"] == "https://careers.walmart.com/us/jobs/w001/job"
+
+    def test_extracts_description_after_header(self):
+        text = "Job Posting Description: Lead amazing teams.\nLocation: San Bruno"
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = _walmart_search_response([_walmart_job(text=text)])
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.post", return_value=mock_resp):
+            jobs = WalmartFetcher().fetch(WALMART_PREFS)
+        assert jobs[0]["description"].startswith("Lead amazing teams.")
+
+    def test_falls_back_to_full_text_when_no_header(self):
+        text = "Engineering leadership role with no header."
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = _walmart_search_response([_walmart_job(text=text)])
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.post", return_value=mock_resp):
+            jobs = WalmartFetcher().fetch(WALMART_PREFS)
+        assert jobs[0]["description"] == text
+
+    def test_deduplicates_across_keywords(self):
+        prefs = {**WALMART_PREFS, "title_keywords": ["Manager, Software Engineering", "Director, Engineering"]}
+        job = _walmart_job()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = _walmart_search_response([job])
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.post", return_value=mock_resp):
+            jobs = WalmartFetcher().fetch(prefs)
+        assert len(jobs) == 1
+
+    def test_returns_empty_on_network_error(self):
+        with patch("pipeline.fetcher.requests.post", side_effect=Exception("Connection refused")):
+            jobs = WalmartFetcher().fetch(WALMART_PREFS)
+        assert jobs == []
+
+    def test_stops_pagination_when_empty_page(self):
+        # Use PAGE_SIZE=1 so a single-job page is "full" and pagination continues
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            m = MagicMock()
+            m.raise_for_status = MagicMock()
+            m.json.return_value = _walmart_search_response([]) if call_count > 1 else _walmart_search_response([_walmart_job()])
+            return m
+
+        fetcher = WalmartFetcher()
+        with patch.object(fetcher, "_PAGE_SIZE", 1), \
+             patch("pipeline.fetcher.requests.post", side_effect=side_effect):
+            jobs = fetcher.fetch(WALMART_PREFS)
+        assert call_count == 2
+        assert len(jobs) == 1
+
+
+# ── WalmartFetcher — integration ──────────────────────────────────────────────
+
+_COMPANIES_YAML_PATH = (
+    __import__("pathlib").Path(__file__).parent.parent / "config" / "companies.yaml"
+)
+
+
+def _load_walmart_company_config():
+    with open(_COMPANIES_YAML_PATH) as f:
+        config = yaml.safe_load(f)
+    companies = config.get("companies", [])
+    return next(c for c in companies if c.get("ats") == "walmart")
+
+
+class TestWalmartFetcherIntegration:
+    """Verify the full path: companies.yaml → fetch_all_companies → WalmartFetcher."""
+
+    def test_companies_yaml_has_walmart_title_keywords(self):
+        walmart = _load_walmart_company_config()
+        assert "title_keywords" in walmart, "Walmart entry in companies.yaml must have title_keywords"
+        keywords = walmart["title_keywords"]
+        assert any("Manager" in kw for kw in keywords), (
+            "At least one keyword should match Walmart's Senior Manager naming convention"
+        )
+
+    def test_fetch_all_companies_passes_yaml_keywords_to_walmart_fetcher(self):
+        walmart = _load_walmart_company_config()
+        expected_keywords = walmart["title_keywords"]
+        captured_prefs = {}
+
+        def capture_fetch(prefs):
+            captured_prefs.update(prefs)
+            return []
+
+        with patch("pipeline.fetcher.WalmartFetcher.fetch", side_effect=capture_fetch):
+            fetch_all_companies([walmart], PREFERENCES)
+
+        assert captured_prefs.get("title_keywords") == expected_keywords, (
+            "fetch_all_companies must pass companies.yaml title_keywords to WalmartFetcher, "
+            f"not the global ones. Got: {captured_prefs.get('title_keywords')}"
+        )
+
+    def test_fetch_all_companies_returns_walmart_jobs_in_results(self):
+        walmart = _load_walmart_company_config()
+        fake_job = {
+            "job_id": "R-integration-001",
+            "company": "Walmart",
+            "title": "Senior Manager, Software Engineering",
+            "location": "Sunnyvale",
+            "url": "https://careers.walmart.com/us/jobs/R-integration-001/job",
+            "apply_url": "https://careers.walmart.com/us/jobs/R-integration-001/job",
+            "description": "Lead engineering teams.",
+        }
+
+        with patch("pipeline.fetcher.WalmartFetcher.fetch", return_value=[fake_job]):
+            jobs = fetch_all_companies([walmart], PREFERENCES)
+
+        walmart_jobs = [j for j in jobs if j["company"] == "Walmart"]
+        assert len(walmart_jobs) == 1
+        assert walmart_jobs[0]["job_id"] == "R-integration-001"

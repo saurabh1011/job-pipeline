@@ -12,7 +12,6 @@ from pipeline.playwright_fetcher import (
     ApplePlaywrightFetcher,
     MetaPlaywrightFetcher,
     MicrosoftPlaywrightFetcher,
-    WalmartPlaywrightFetcher,
     _PLAYWRIGHT_FETCHER_MAP,
 )
 
@@ -310,71 +309,6 @@ class TestMicrosoftPlaywrightFetcher:
         assert jobs == []
 
 
-# ── WalmartPlaywrightFetcher ───────────────────────────────────────────────────
-
-WALMART_API_RESPONSE = {
-    "data": {
-        "jobSearch": {
-            "jobs": [
-                {
-                    "id": "w001",
-                    "title": "Senior Engineering Manager, Supply Chain",
-                    "location": "San Bruno, CA",
-                    "postedDate": "2026-04-18",
-                    "jobUrl": "https://careers.walmart.com/us/jobs/w001/job",
-                    "jobDescription": "Lead supply chain engineering teams...",
-                },
-                {
-                    "id": "w002",
-                    "title": "Warehouse Associate",
-                    "location": "Bentonville, AR",
-                    "postedDate": "2026-04-18",
-                    "jobUrl": "https://careers.walmart.com/us/jobs/w002/job",
-                    "jobDescription": "Fulfill orders...",
-                },
-            ],
-            "totalCount": 2,
-        }
-    }
-}
-
-
-class TestWalmartPlaywrightFetcher:
-    def test_filters_by_title(self):
-        page = _mock_page(evaluate=WALMART_API_RESPONSE)
-        fetcher = WalmartPlaywrightFetcher()
-        with patch.object(fetcher, "_load_page", return_value=None):
-            jobs = fetcher.fetch(PREFERENCES, page)
-        titles = [j["title"] for j in jobs]
-        assert "Senior Engineering Manager, Supply Chain" in titles
-        assert "Warehouse Associate" not in titles
-
-    def test_returns_normalized_job_dict(self):
-        page = _mock_page(evaluate=WALMART_API_RESPONSE)
-        fetcher = WalmartPlaywrightFetcher()
-        with patch.object(fetcher, "_load_page", return_value=None):
-            jobs = fetcher.fetch(PREFERENCES, page)
-        job = jobs[0]
-        for key in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
-            assert key in job
-        assert job["company"] == "Walmart"
-
-    def test_returns_empty_on_api_failure(self):
-        page = _mock_page()
-        page.evaluate.side_effect = Exception("GraphQL error")
-        fetcher = WalmartPlaywrightFetcher()
-        with patch.object(fetcher, "_load_page", return_value=None):
-            jobs = fetcher.fetch(PREFERENCES, page)
-        assert jobs == []
-
-    def test_returns_empty_on_page_load_failure(self):
-        page = _mock_page()
-        page.goto.side_effect = Exception("Timeout")
-        fetcher = WalmartPlaywrightFetcher()
-        jobs = fetcher.fetch(PREFERENCES, page)
-        assert jobs == []
-
-
 # ── _PLAYWRIGHT_FETCHER_MAP ────────────────────────────────────────────────────
 
 class TestPlaywrightFetcherMap:
@@ -382,8 +316,10 @@ class TestPlaywrightFetcherMap:
         ("google", GooglePlaywrightFetcher),
         ("apple", ApplePlaywrightFetcher),
         ("meta", MetaPlaywrightFetcher),
-        ("walmart", WalmartPlaywrightFetcher),
     ])
     def test_map_contains_all_fetchers(self, ats_key, expected_cls):
         assert ats_key in _PLAYWRIGHT_FETCHER_MAP
         assert _PLAYWRIGHT_FETCHER_MAP[ats_key] is expected_cls
+
+    def test_walmart_not_in_playwright_map(self):
+        assert "walmart" not in _PLAYWRIGHT_FETCHER_MAP
