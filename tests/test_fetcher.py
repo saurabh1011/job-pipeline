@@ -490,6 +490,45 @@ class TestBuildCompanyPrefs:
 
 # ── fetch_all_companies — per-company timeout ─────────────────────────────────
 
+class TestFetchAllCompaniesErrors:
+    def test_fetch_errors_populated_on_timeout(self):
+        def slow_fetch(prefs):
+            time.sleep(5)
+            return []
+
+        company = {"name": "SlowCo", "ats": "greenhouse", "board_slug": "slowco", "fetch_timeout": 1}
+        errors = {}
+        with patch("pipeline.fetcher.GreenhouseFetcher.fetch", side_effect=slow_fetch):
+            fetch_all_companies([company], PREFERENCES, fetch_errors=errors)
+        assert "SlowCo" in errors
+        assert "TIMEOUT" in errors["SlowCo"]
+
+    def test_fetch_errors_populated_on_exception(self):
+        company = {"name": "Stripe", "ats": "greenhouse", "board_slug": "stripe"}
+        errors = {}
+        with patch("pipeline.fetcher.GreenhouseFetcher.fetch", side_effect=Exception("Connection refused")):
+            fetch_all_companies([company], PREFERENCES, fetch_errors=errors)
+        assert "Stripe" in errors
+        assert "Connection refused" in errors["Stripe"]
+
+    def test_fetch_errors_not_set_on_success(self):
+        company = {"name": "Stripe", "ats": "greenhouse", "board_slug": "stripe"}
+        errors = {}
+        with patch("pipeline.fetcher.GreenhouseFetcher.fetch", return_value=[]):
+            fetch_all_companies([company], PREFERENCES, fetch_errors=errors)
+        assert "Stripe" not in errors
+
+    def test_fetch_errors_none_param_does_not_crash_on_timeout(self):
+        def slow_fetch(prefs):
+            time.sleep(5)
+            return []
+
+        company = {"name": "SlowCo", "ats": "greenhouse", "board_slug": "slowco", "fetch_timeout": 1}
+        with patch("pipeline.fetcher.GreenhouseFetcher.fetch", side_effect=slow_fetch):
+            jobs = fetch_all_companies([company], PREFERENCES, fetch_errors=None)
+        assert jobs == []
+
+
 class TestFetchAllCompaniesTimeout:
     def test_skips_company_that_exceeds_timeout(self):
         def slow_fetch(prefs):

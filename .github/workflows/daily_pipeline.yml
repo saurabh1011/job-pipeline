@@ -1,0 +1,55 @@
+name: Daily Pipeline Run
+
+on:
+  schedule:
+    - cron: '0 9 * * *'   # 5:00 AM ET (EDT = UTC-4); shifts to 4am in winter (EST = UTC-5)
+    - cron: '0 21 * * *'  # 5:00 PM ET (EDT = UTC-4); shifts to 4pm in winter
+  workflow_dispatch:       # allow manual trigger from GitHub Actions UI
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Trigger pipeline run
+        id: trigger
+        run: |
+          response=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "X-API-Key: ${{ secrets.JOB_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            https://job-pipeline.fly.dev/api/pipeline/run)
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | head -1)
+          echo "HTTP status: $http_code"
+          echo "Response: $body"
+          if [ "$http_code" != "200" ]; then
+            echo "Failed to trigger pipeline (HTTP $http_code): $body"
+            exit 1
+          fi
+          task_id=$(echo "$body" | python3 -c "import json,sys; print(json.load(sys.stdin)['task_id'])")
+          echo "task_id=$task_id" >> "$GITHUB_OUTPUT"
+          echo "Pipeline triggered — task_id: $task_id"
+
+      - name: Wait for pipeline to complete
+        run: |
+          task_id="${{ steps.trigger.outputs.task_id }}"
+          echo "Polling task $task_id..."
+          for i in $(seq 1 80); do
+            response=$(curl -s -H "X-API-Key: ${{ secrets.JOB_API_KEY }}" \
+              "https://job-pipeline.fly.dev/api/tasks/$task_id")
+            status=$(echo "$response" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','unknown'))" 2>/dev/null || echo "unknown")
+            echo "[$i/80] status=$status"
+            if [ "$status" = "done" ]; then
+              echo "Pipeline completed successfully."
+              exit 0
+            elif [ "$status" = "error" ]; then
+              echo "Pipeline task ended with error. Check the app logs."
+              # Don't exit 1 — the pipeline email already reported the failure.
+              exit 0
+            fi
+            sleep 60
+          done
+          echo "Timed out after 80 minutes waiting for pipeline."
+          exit 1

@@ -119,12 +119,20 @@ def build_summary_email(
     threshold = stats.get("threshold", 8)
     run_date = stats.get("run_date", str(date.today()))
 
-    subject = (
-        f"[Job Pipeline] {run_date} — "
-        f"{stats.get('total_fetched', 0)} scanned, "
-        f"{stats.get('new_jobs', 0)} new, "
-        f"{high_count} high-match"
-    )
+    fetch_errors = stats.get("fetch_errors") or {}
+    run_error = stats.get("run_error")
+
+    if run_error:
+        subject = f"[Job Pipeline] {run_date} — PIPELINE FAILED"
+    else:
+        error_suffix = f", {len(fetch_errors)} fetch error{'s' if len(fetch_errors) != 1 else ''}" if fetch_errors else ""
+        subject = (
+            f"[Job Pipeline] {run_date} — "
+            f"{stats.get('total_fetched', 0)} scanned, "
+            f"{stats.get('new_jobs', 0)} new, "
+            f"{high_count} high-match"
+            f"{error_suffix}"
+        )
 
     # Score distribution buckets
     buckets = {"9-10": 0, "8": 0, "6-7": 0, "1-5": 0, "failed": stats.get("failed_scoring", 0)}
@@ -151,6 +159,7 @@ def build_summary_email(
         f"  Retried (prev.): {stats.get('rescored_jobs', 0)}",
         f"  Scored this run: {stats.get('scored_jobs', 0)}",
         f"  Failed scoring:  {stats.get('failed_scoring', 0)}",
+        f"  Fetch errors:    {len(fetch_errors)}",
         "",
         "SCORE DISTRIBUTION (threshold ≥ {})".format(threshold),
         f"  Score 9-10  (exceptional): {buckets['9-10']}",
@@ -160,6 +169,29 @@ def build_summary_email(
         f"  Failed/unscored:           {buckets['failed']}",
         "",
     ]
+
+    # ── Run error section ─────────────────────────────────────────────────────
+    if run_error:
+        lines += [
+            "=" * 60,
+            "PIPELINE ERROR",
+            "=" * 60,
+            "",
+            run_error,
+            "",
+        ]
+
+    # ── Fetch errors section ──────────────────────────────────────────────────
+    if fetch_errors:
+        lines += [
+            "=" * 60,
+            f"FETCH ERRORS ({len(fetch_errors)} {'company' if len(fetch_errors) == 1 else 'companies'} failed)",
+            "=" * 60,
+            "",
+        ]
+        for company, error in fetch_errors.items():
+            lines.append(f"  {company}: {error}")
+        lines.append("")
 
     # ── High-match jobs section ───────────────────────────────────────────────
     if alert_jobs:

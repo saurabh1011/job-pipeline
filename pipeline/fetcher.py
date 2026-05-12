@@ -1066,12 +1066,18 @@ _FETCHER_MAP = {
 _PLAYWRIGHT_ATS = {"google", "apple", "meta"}
 
 
-def fetch_all_companies(companies_config: List[dict], preferences: dict, log=None) -> List[dict]:
+def fetch_all_companies(
+    companies_config: List[dict],
+    preferences: dict,
+    log=None,
+    fetch_errors: Dict[str, Any] = None,
+) -> List[dict]:
     """Run all company fetchers and return aggregated job list.
 
     Input:
         companies_config: list of company dicts from companies.yaml
         preferences: dict from preferences.yaml
+        fetch_errors: optional dict; populated with {company_name: error_msg} on failures
 
     Output:
         list of normalized job dicts (see module docstring)
@@ -1117,9 +1123,13 @@ def fetch_all_companies(companies_config: List[dict], preferences: dict, log=Non
         elapsed = time.time() - t0
         if thread.is_alive():
             _log(f"  TIMEOUT after {fetch_timeout}s — skipping {name}")
+            if fetch_errors is not None:
+                fetch_errors[name] = f"TIMEOUT after {fetch_timeout}s"
             jobs = []
         elif result_holder["exc"]:
             _log(f"  ERROR: {result_holder['exc']}")
+            if fetch_errors is not None:
+                fetch_errors[name] = str(result_holder["exc"])
             jobs = []
         else:
             jobs = result_holder["jobs"]
@@ -1150,6 +1160,10 @@ def fetch_all_companies(companies_config: List[dict], preferences: dict, log=Non
                     try:
                         jobs = fetcher.fetch(company_prefs, page, log=log)
                         all_jobs.extend(jobs)
+                    except Exception as exc:
+                        _log(f"  ERROR fetching {company['name']}: {exc}")
+                        if fetch_errors is not None:
+                            fetch_errors[company["name"]] = str(exc)
                     finally:
                         page.close()
                 finally:

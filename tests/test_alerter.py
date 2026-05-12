@@ -185,3 +185,77 @@ class TestGmailAlerter:
                 stats=SAMPLE_STATS,
             )
         mock_smtp.send_message.assert_called_once()
+
+
+# ── fetch_errors in email ─────────────────────────────────────────────────────
+
+class TestBuildSummaryEmailFetchErrors:
+    def test_fetch_errors_in_subject(self):
+        stats = {**SAMPLE_STATS, "fetch_errors": {"Google": "TIMEOUT after 60s", "Apple": "HTTP 503"}}
+        subject, _ = build_summary_email([], SAMPLE_JOBS, stats)
+        assert "2 fetch errors" in subject
+
+    def test_single_fetch_error_singular(self):
+        stats = {**SAMPLE_STATS, "fetch_errors": {"Google": "TIMEOUT after 60s"}}
+        subject, _ = build_summary_email([], SAMPLE_JOBS, stats)
+        assert "1 fetch error" in subject
+        assert "errors" not in subject
+
+    def test_fetch_errors_section_in_body(self):
+        stats = {**SAMPLE_STATS, "fetch_errors": {"Google": "TIMEOUT after 60s", "Apple": "HTTP 503"}}
+        _, body = build_summary_email([], SAMPLE_JOBS, stats)
+        assert "FETCH ERRORS" in body
+        assert "Google: TIMEOUT after 60s" in body
+        assert "Apple: HTTP 503" in body
+
+    def test_no_fetch_errors_section_when_empty(self):
+        stats = {**SAMPLE_STATS, "fetch_errors": {}}
+        _, body = build_summary_email([], SAMPLE_JOBS, stats)
+        assert "FETCH ERRORS" not in body
+
+    def test_no_fetch_errors_key_in_stats(self):
+        _, body = build_summary_email([], SAMPLE_JOBS, SAMPLE_STATS)
+        assert "FETCH ERRORS" not in body
+
+    def test_fetch_error_count_in_summary(self):
+        stats = {**SAMPLE_STATS, "fetch_errors": {"Meta": "Playwright crash"}}
+        _, body = build_summary_email([], SAMPLE_JOBS, stats)
+        assert "Fetch errors:    1" in body
+
+    def test_run_error_in_subject(self):
+        stats = {**SAMPLE_STATS, "run_error": "Unhandled exception: DB locked"}
+        subject, _ = build_summary_email([], [], stats)
+        assert "PIPELINE FAILED" in subject
+
+    def test_run_error_in_body(self):
+        stats = {**SAMPLE_STATS, "run_error": "Unhandled exception: DB locked"}
+        _, body = build_summary_email([], [], stats)
+        assert "PIPELINE ERROR" in body
+        assert "Unhandled exception: DB locked" in body
+
+    def test_no_run_error_section_on_success(self):
+        _, body = build_summary_email(SAMPLE_JOBS, SAMPLE_JOBS, SAMPLE_STATS)
+        assert "PIPELINE ERROR" not in body
+
+
+# ── _send_pipeline_email wiring ───────────────────────────────────────────────
+
+class TestSendPipelineEmail:
+    def test_sends_when_all_env_vars_set(self):
+        from web.server import _send_pipeline_email
+        stats = {**SAMPLE_STATS, "fetch_errors": {}, "run_error": None, "run_date": "2026-05-12"}
+        with patch.dict("os.environ", {"SMTP_USER": "u@g.com", "SMTP_PASSWORD": "pw", "ALERT_EMAIL": "me@g.com"}), \
+             patch("pipeline.alerter.smtplib.SMTP_SSL") as mock_ssl:
+            ctx = MagicMock()
+            mock_ssl.return_value.__enter__ = MagicMock(return_value=ctx)
+            mock_ssl.return_value.__exit__ = MagicMock(return_value=False)
+            _send_pipeline_email(SAMPLE_JOBS, SAMPLE_JOBS[:1], stats)
+        ctx.send_message.assert_called_once()
+
+    def test_skips_when_smtp_not_configured(self):
+        from web.server import _send_pipeline_email
+        stats = {**SAMPLE_STATS, "fetch_errors": {}, "run_error": None, "run_date": "2026-05-12"}
+        with patch.dict("os.environ", {"SMTP_USER": "", "SMTP_PASSWORD": "", "ALERT_EMAIL": ""}), \
+             patch("pipeline.alerter.smtplib.SMTP_SSL") as mock_ssl:
+            _send_pipeline_email(SAMPLE_JOBS, SAMPLE_JOBS[:1], stats)
+        mock_ssl.assert_not_called()

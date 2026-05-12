@@ -4,12 +4,15 @@ Run from project root:
     python3 -m uvicorn web.server:app --reload --port 8000
 """
 import json
+import logging
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 import yaml
 from fastapi import Depends, FastAPI, HTTPException
@@ -281,11 +284,31 @@ def _resolve_companies(all_companies: list, group: Optional[str], company_filter
     return all_companies
 
 
-def _score_job_list(log, jobs: list, prefs: dict, provider, threshold: int, loader) -> int:
-    """Score a list of jobs. Returns count of scored jobs."""
+def _send_pipeline_email(all_scored: list, alert_jobs: list, stats: dict):
+    """Send run summary email if SMTP credentials are configured."""
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    alert_email = os.environ.get("ALERT_EMAIL")
+    if not (smtp_user and smtp_password and alert_email):
+        return
+    from pipeline.alerter import GmailAlerter
+    try:
+        GmailAlerter(alert_email).send_alert(
+            alert_jobs, smtp_user, smtp_password,
+            all_scored=all_scored, stats=stats,
+        )
+        logger.info("Pipeline email sent to %s", alert_email)
+    except Exception as exc:
+        logger.error("Failed to send pipeline email: %s", exc)
+
+
+def _score_job_list(log, jobs: list, prefs: dict, provider, threshold: int, loader) -> tuple:
+    """Score a list of jobs. Returns (scored_count, failed_count, scored_jobs_list)."""
     from pipeline.scorer import JobScorer
     scorer = JobScorer(provider=provider)
     scored = 0
+    failed = 0
+    scored_jobs = []
     n = len(jobs)
     for i, job in enumerate(jobs, 1):
         company, job_id, title = job["company"], job["job_id"], job["title"]
@@ -296,16 +319,19 @@ def _score_job_list(log, jobs: list, prefs: dict, provider, threshold: int, load
             store = JobStore(DB_PATH)
             store.set_match_score(company, job_id, result.adjusted_score, result.summary,
                                   strengths=result.strengths, gaps=result.gaps)
-            scored += 1
-            log(f"  → {result.adjusted_score}/10  {result.summary[:80]}")
             if result.meets_threshold(threshold):
                 store.update_status(company, job_id, JobStatus.ALERTED)
             else:
                 store.update_status(company, job_id, JobStatus.SKIPPED)
             store.close()
+            scored += 1
+            log(f"  → {result.adjusted_score}/10  {result.summary[:80]}")
+            scored_jobs.append({**job, "match_score": result.adjusted_score,
+                                 "match_summary": result.summary})
         except Exception as e:
+            failed += 1
             log(f"  ERROR: {e}")
-    return scored
+    return scored, failed, scored_jobs
 
 
 def _do_run(log, group: str = None, company_filter: list = None, action: str = "source_and_score"):
@@ -343,6 +369,9 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
     fetched_all = []
     new_jobs = []
     scored = 0
+    failed_scoring = 0
+    all_scored_jobs = []
+    fetch_errors = {}
     _run_error = None
 
     try:
@@ -352,7 +381,8 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
             uses_playwright = any(c.get("ats") in _PLAYWRIGHT_ATS for c in companies)
             if uses_playwright:
                 log("Launching browser (Playwright) — this may take several minutes...")
-            fetched_all = fetch_all_companies(companies, prefs, log=log)
+            fetched_all = fetch_all_companies(companies, prefs, log=log,
+                                              fetch_errors=fetch_errors)
             store = JobStore(DB_PATH)
             for job in fetched_all:
                 if store.upsert_job(job):
@@ -385,7 +415,8 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
             log("Nothing to score.")
             return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": 0}
 
-        scored = _score_job_list(log, jobs_to_score, prefs, provider, threshold, loader)
+        scored, failed_scoring, all_scored_jobs = _score_job_list(
+            log, jobs_to_score, prefs, provider, threshold, loader)
         log(f"\nDone. Fetched: {len(fetched_all)}  New: {len(new_jobs)}  Scored: {scored}")
         return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": scored}
 
@@ -405,6 +436,21 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
             error_msg=_run_error,
         )
         _fin_store.close()
+
+        from datetime import date as _date
+        _stats = {
+            "total_fetched": len(fetched_all),
+            "new_jobs": len(new_jobs),
+            "rescored_jobs": 0,
+            "scored_jobs": scored,
+            "failed_scoring": failed_scoring,
+            "threshold": threshold,
+            "run_date": str(_date.today()),
+            "fetch_errors": fetch_errors,
+            "run_error": _run_error,
+        }
+        _alert_jobs = [j for j in all_scored_jobs if (j.get("match_score") or 0) >= threshold]
+        _send_pipeline_email(all_scored_jobs, _alert_jobs, _stats)
 
 
 def _do_rescore_job(log, company: str, job_id: str):

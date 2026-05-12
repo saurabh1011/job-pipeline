@@ -3,7 +3,7 @@ import json
 import pytest
 import yaml
 from fastapi.testclient import TestClient
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import web.server as server_module
 from web.server import app
@@ -377,3 +377,160 @@ class TestAuthEnforcement:
         monkeypatch.setattr(auth_mod, "_API_KEY", "testkey")
         r = client.get("/api/jobs", headers={"x-api-key": "testkey"})
         assert r.status_code == 200
+
+
+# ── _score_job_list unit tests ────────────────────────────────────────────────
+
+def _fake_job(company="Acme", job_id="j1", title="Engineering Manager"):
+    return {"company": company, "job_id": job_id, "title": title,
+            "location": "New York", "url": "https://example.com",
+            "apply_url": "https://example.com", "description": "Lead teams."}
+
+
+def _mock_score_result(score=9, summary="Great match", meets=True):
+    r = MagicMock()
+    r.adjusted_score = score
+    r.summary = summary
+    r.strengths = []
+    r.gaps = []
+    r.meets_threshold.return_value = meets
+    return r
+
+
+class TestScoreJobList:
+    def test_returns_tuple_of_three(self, db_path, monkeypatch):
+        from web.server import _score_job_list
+        monkeypatch.setattr(server_module, "DB_PATH", db_path)
+        scorer = MagicMock()
+        scorer.score.return_value = _mock_score_result()
+        loader = MagicMock()
+        with patch("pipeline.scorer.JobScorer", return_value=scorer):
+            result = _score_job_list(lambda m: None, [_fake_job()], {}, MagicMock(), 7, loader)
+        assert len(result) == 3
+
+    def test_scored_count_increments_on_success(self, db_path, monkeypatch):
+        from web.server import _score_job_list
+        monkeypatch.setattr(server_module, "DB_PATH", db_path)
+        scorer = MagicMock()
+        scorer.score.return_value = _mock_score_result()
+        loader = MagicMock()
+        with patch("pipeline.scorer.JobScorer", return_value=scorer):
+            scored, failed, _ = _score_job_list(
+                lambda m: None, [_fake_job(), _fake_job(job_id="j2")], {}, MagicMock(), 7, loader)
+        assert scored == 2
+        assert failed == 0
+
+    def test_failed_count_increments_on_exception(self, db_path, monkeypatch):
+        from web.server import _score_job_list
+        monkeypatch.setattr(server_module, "DB_PATH", db_path)
+        scorer = MagicMock()
+        scorer.score.side_effect = Exception("LLM error")
+        loader = MagicMock()
+        with patch("pipeline.scorer.JobScorer", return_value=scorer):
+            scored, failed, scored_jobs = _score_job_list(
+                lambda m: None, [_fake_job()], {}, MagicMock(), 7, loader)
+        assert scored == 0
+        assert failed == 1
+        assert scored_jobs == []
+
+    def test_scored_jobs_contain_match_score_and_summary(self, db_path, monkeypatch):
+        from web.server import _score_job_list
+        monkeypatch.setattr(server_module, "DB_PATH", db_path)
+        scorer = MagicMock()
+        scorer.score.return_value = _mock_score_result(score=8, summary="Strong alignment")
+        loader = MagicMock()
+        with patch("pipeline.scorer.JobScorer", return_value=scorer):
+            _, _, scored_jobs = _score_job_list(
+                lambda m: None, [_fake_job()], {}, MagicMock(), 7, loader)
+        assert scored_jobs[0]["match_score"] == 8
+        assert scored_jobs[0]["match_summary"] == "Strong alignment"
+
+    def test_partial_failure_mixes_counted_correctly(self, db_path, monkeypatch):
+        from web.server import _score_job_list
+        monkeypatch.setattr(server_module, "DB_PATH", db_path)
+        scorer = MagicMock()
+        scorer.score.side_effect = [_mock_score_result(score=9), Exception("LLM timeout")]
+        loader = MagicMock()
+        with patch("pipeline.scorer.JobScorer", return_value=scorer):
+            scored, failed, scored_jobs = _score_job_list(
+                lambda m: None, [_fake_job(), _fake_job(job_id="j2")], {}, MagicMock(), 7, loader)
+        assert scored == 1
+        assert failed == 1
+        assert len(scored_jobs) == 1
+
+
+# ── _do_run → email integration ───────────────────────────────────────────────
+
+@pytest.fixture()
+def do_run_patches(cfg_dir, db_path, monkeypatch):
+    """Fixture that sets up monkeypatches and common mocks for _do_run tests."""
+    monkeypatch.setattr(server_module, "CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setattr(server_module, "DB_PATH", db_path)
+    monkeypatch.setattr(server_module, "PROFILE_DIR", str(cfg_dir))
+    with patch("pipeline.llm.create_provider", return_value=MagicMock()), \
+         patch("pipeline.profile.ProfileLoader", return_value=MagicMock()):
+        yield
+
+
+class TestDoRunEmailIntegration:
+    def test_email_sent_after_successful_run(self, do_run_patches, cfg_dir, db_path):
+        from web.server import _do_run
+        fake_job = _fake_job()
+        scored_job = {**fake_job, "match_score": 9, "match_summary": "Great match"}
+        with patch("pipeline.fetcher.fetch_all_companies", return_value=[fake_job]), \
+             patch("web.server._score_job_list", return_value=(1, 0, [scored_job])), \
+             patch("web.server._send_pipeline_email") as mock_email:
+            _do_run(lambda m: None)
+        mock_email.assert_called_once()
+
+    def test_email_stats_include_scored_count(self, do_run_patches, cfg_dir, db_path):
+        from web.server import _do_run
+        fake_job = _fake_job()
+        scored_job = {**fake_job, "match_score": 9, "match_summary": "Great match"}
+        with patch("pipeline.fetcher.fetch_all_companies", return_value=[fake_job]), \
+             patch("web.server._score_job_list", return_value=(1, 0, [scored_job])), \
+             patch("web.server._send_pipeline_email") as mock_email:
+            _do_run(lambda m: None)
+        _, _, stats = mock_email.call_args[0]
+        assert stats["scored_jobs"] == 1
+        assert stats["failed_scoring"] == 0
+
+    def test_email_sent_even_when_fetch_crashes(self, do_run_patches, cfg_dir, db_path):
+        from web.server import _do_run
+        with patch("pipeline.fetcher.fetch_all_companies", side_effect=Exception("Network down")), \
+             patch("web.server._send_pipeline_email") as mock_email:
+            with pytest.raises(Exception, match="Network down"):
+                _do_run(lambda m: None)
+        mock_email.assert_called_once()
+        _, _, stats = mock_email.call_args[0]
+        assert stats["run_error"] == "Network down"
+
+    def test_fetch_errors_flow_to_email_stats(self, do_run_patches, cfg_dir, db_path):
+        from web.server import _do_run
+
+        def fetch_with_errors(companies, prefs, log=None, fetch_errors=None):
+            if fetch_errors is not None:
+                fetch_errors["Acme"] = "TIMEOUT after 60s"
+            return []
+
+        with patch("pipeline.fetcher.fetch_all_companies", side_effect=fetch_with_errors), \
+             patch("web.server._send_pipeline_email") as mock_email:
+            _do_run(lambda m: None)
+
+        _, _, stats = mock_email.call_args[0]
+        assert "Acme" in stats["fetch_errors"]
+        assert "TIMEOUT" in stats["fetch_errors"]["Acme"]
+
+    def test_alert_jobs_filtered_by_threshold(self, do_run_patches, cfg_dir, db_path):
+        from web.server import _do_run
+        fake_job = _fake_job()
+        high = {**fake_job, "match_score": 9, "match_summary": "Great"}
+        low = {**_fake_job(job_id="j2"), "match_score": 5, "match_summary": "Weak"}
+        with patch("pipeline.fetcher.fetch_all_companies", return_value=[fake_job, _fake_job(job_id="j2")]), \
+             patch("web.server._score_job_list", return_value=(2, 0, [high, low])), \
+             patch("web.server._send_pipeline_email") as mock_email:
+            _do_run(lambda m: None)
+        all_scored, alert_jobs, _ = mock_email.call_args[0]
+        assert len(all_scored) == 2
+        assert all(j["match_score"] >= 7 for j in alert_jobs)
+        assert len(alert_jobs) == 1
