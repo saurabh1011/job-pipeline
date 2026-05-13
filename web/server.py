@@ -437,20 +437,23 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
         )
         _fin_store.close()
 
-        from datetime import date as _date
-        _stats = {
-            "total_fetched": len(fetched_all),
-            "new_jobs": len(new_jobs),
-            "rescored_jobs": 0,
-            "scored_jobs": scored,
-            "failed_scoring": failed_scoring,
-            "threshold": threshold,
-            "run_date": str(_date.today()),
-            "fetch_errors": fetch_errors,
-            "run_error": _run_error,
-        }
-        _alert_jobs = [j for j in all_scored_jobs if (j.get("match_score") or 0) >= threshold]
-        _send_pipeline_email(all_scored_jobs, _alert_jobs, _stats)
+        try:
+            from datetime import date as _date
+            _stats = {
+                "total_fetched": len(fetched_all),
+                "new_jobs": len(new_jobs),
+                "rescored_jobs": 0,
+                "scored_jobs": scored,
+                "failed_scoring": failed_scoring,
+                "threshold": threshold,
+                "run_date": str(_date.today()),
+                "fetch_errors": fetch_errors,
+                "run_error": _run_error,
+            }
+            _alert_jobs = [j for j in all_scored_jobs if (j.get("match_score") or 0) >= threshold]
+            _send_pipeline_email(all_scored_jobs, _alert_jobs, _stats)
+        except Exception as e:
+            logger.error("Failed to send pipeline summary email: %s", e)
 
 
 def _do_rescore_job(log, company: str, job_id: str):
