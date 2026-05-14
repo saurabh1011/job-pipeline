@@ -58,6 +58,18 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
 );
 """
 
+_TASKS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id              TEXT PRIMARY KEY,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    logs            TEXT NOT NULL DEFAULT '[]',
+    result          TEXT,
+    started_at      TEXT,
+    ended_at        TEXT,
+    created_at      TEXT NOT NULL
+);
+"""
+
 _MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN score_attempted INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE jobs ADD COLUMN match_strengths TEXT",
@@ -76,6 +88,7 @@ class JobStore:
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.executescript(_SCHEMA)
         self._conn.executescript(_RUNS_SCHEMA)
+        self._conn.executescript(_TASKS_SCHEMA)
         self._apply_migrations()
         self._conn.commit()
 
@@ -234,3 +247,33 @@ class JobStore:
             "SELECT * FROM jobs ORDER BY date_seen DESC"
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def save_task(self, task_id: str, status: str, logs: List[str], result=None, started_at=None, ended_at=None):
+        """Persist task state to database."""
+        self._conn.execute(
+            """INSERT OR REPLACE INTO tasks (id, status, logs, result, started_at, ended_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (task_id, status, json.dumps(logs), json.dumps(result) if result else None,
+             started_at, ended_at, datetime.now(timezone.utc).isoformat())
+        )
+        self._conn.commit()
+
+    def get_task(self, task_id: str) -> Optional[dict]:
+        """Retrieve task from database."""
+        row = self._conn.execute(
+            "SELECT * FROM tasks WHERE id = ?",
+            (task_id,)
+        ).fetchone()
+        if not row:
+            return None
+        task = dict(row)
+        # Parse JSON fields
+        if task['logs']:
+            task['logs'] = json.loads(task['logs'])
+        if task['result']:
+            task['result'] = json.loads(task['result'])
+        return task
+
+    def close(self):
+        """Close database connection."""
+        self._conn.close()

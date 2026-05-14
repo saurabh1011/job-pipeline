@@ -1,17 +1,21 @@
-"""In-memory background task runner.
+"""In-memory background task runner with database persistence.
 
 Each task has:
   id       - unique string (uuid4 short)
   status   - pending | running | done | error
   logs     - list of strings emitted during the run
   result   - dict with outcome data (set on completion)
+
+Tasks are stored in memory for quick access and persisted to database for recovery across restarts.
 """
 import os
+import sys
 import threading
 import time
 import traceback
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Dict, Optional
 
 import requests
@@ -72,7 +76,20 @@ def _make_id() -> str:
 
 
 def get_task(task_id: str) -> Optional[dict]:
-    return _tasks.get(task_id)
+    # Check memory first
+    if task_id in _tasks:
+        return _tasks[task_id]
+
+    # Fall back to database if app restarted
+    try:
+        from pipeline.store import JobStore
+        db_path = os.environ.get("DB_PATH", str(Path(__file__).parent.parent / "jobs.db"))
+        store = JobStore(db_path)
+        task = store.get_task(task_id)
+        store.close()
+        return task
+    except Exception:
+        return None
 
 
 def list_tasks() -> list:
@@ -89,16 +106,32 @@ def create_task(fn: Callable, *args, **kwargs) -> str:
     with _lock:
         _tasks[task_id] = task
 
+    def _save_task_to_db():
+        """Persist task state to database."""
+        try:
+            from pipeline.store import JobStore
+            db_path = os.environ.get("DB_PATH", str(Path(__file__).parent.parent / "jobs.db"))
+            store = JobStore(db_path)
+            with _lock:
+                store.save_task(task_id, _tasks[task_id]["status"], _tasks[task_id]["logs"],
+                               _tasks[task_id]["result"], _tasks[task_id]["started_at"],
+                               _tasks[task_id]["ended_at"])
+            store.close()
+        except Exception:
+            pass  # Fail silently — in-memory state is still valid
+
     def _log(msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
         with _lock:
             _tasks[task_id]["logs"].append(f"[{ts}] {msg}")
+        _save_task_to_db()
 
     def _run():
         _start_keepalive()
         with _lock:
             _tasks[task_id]["status"] = "running"
             _tasks[task_id]["started_at"] = datetime.now(timezone.utc).isoformat()
+        _save_task_to_db()
         try:
             result = fn(_log, *args, **kwargs)
             with _lock:
@@ -112,6 +145,7 @@ def create_task(fn: Callable, *args, **kwargs) -> str:
                 _tasks[task_id]["logs"].append(traceback.format_exc())
                 _tasks[task_id]["ended_at"] = datetime.now(timezone.utc).isoformat()
         finally:
+            _save_task_to_db()
             _stop_keepalive()
 
     thread = threading.Thread(target=_run, daemon=True)
