@@ -33,10 +33,12 @@ DB_PATH    = os.environ.get("DB_PATH",      str(ROOT / "jobs.db"))
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR",   str(ROOT / "output"))
 CONFIG_DIR = os.environ.get("CONFIG_DIR",   str(ROOT / "config"))
 PROFILE_DIR = os.environ.get("PROFILE_DIR", str(ROOT / "profile"))
+LOG_DIR    = os.environ.get("LOG_DIR",      str(ROOT / "logs"))
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(PROFILE_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
 
 # Sync versioned config files from the image into the volume on every startup.
 # The volume owns jobs.db/output/profile (mutable state); config files are

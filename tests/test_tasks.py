@@ -1,9 +1,11 @@
 """Unit tests for web/tasks.py — in-memory background task runner."""
+import os
 import threading
 import time
 import pytest
 
 from web.tasks import create_task, get_task, list_tasks, _tasks, _lock
+import web.tasks as tasks_module
 
 
 @pytest.fixture(autouse=True)
@@ -139,3 +141,115 @@ class TestListTasks:
         create_task(fn)
         list2 = list_tasks()
         assert len(list2) == len(list1) + 1
+
+
+# ── Log writing ───────────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def log_dir(tmp_path, monkeypatch):
+    d = str(tmp_path / "logs")
+    monkeypatch.setattr(tasks_module, "_LOG_DIR", d)
+    return d
+
+
+class TestWriteTaskLog:
+    def test_log_file_created_after_done(self, log_dir):
+        def fn(log):
+            log("step one")
+        task_id = create_task(fn)
+        _wait_for(task_id, "done")
+        time.sleep(0.1)
+        files = os.listdir(log_dir)
+        assert any(f.startswith(f"run_{task_id}_") and f.endswith(".log") for f in files)
+
+    def test_log_file_created_after_error(self, log_dir):
+        def fn(log):
+            raise RuntimeError("task failed")
+        task_id = create_task(fn)
+        _wait_for(task_id, "error")
+        time.sleep(0.1)
+        files = os.listdir(log_dir)
+        assert any(f.startswith(f"run_{task_id}_") and f.endswith(".log") for f in files)
+
+    def test_log_file_contains_task_logs(self, log_dir):
+        def fn(log):
+            log("hello from task")
+        task_id = create_task(fn)
+        _wait_for(task_id, "done")
+        time.sleep(0.1)
+        files = [f for f in os.listdir(log_dir) if f.startswith(f"run_{task_id}_")]
+        content = open(os.path.join(log_dir, files[0])).read()
+        assert "hello from task" in content
+
+    def test_log_file_contains_status_header(self, log_dir):
+        def fn(log): pass
+        task_id = create_task(fn)
+        _wait_for(task_id, "done")
+        time.sleep(0.1)
+        files = [f for f in os.listdir(log_dir) if f.startswith(f"run_{task_id}_")]
+        content = open(os.path.join(log_dir, files[0])).read()
+        assert f"Task ID: {task_id}" in content
+        assert "Status:  done" in content
+
+    def test_no_tmp_file_left_behind(self, log_dir):
+        def fn(log): pass
+        task_id = create_task(fn)
+        _wait_for(task_id, "done")
+        time.sleep(0.1)
+        tmp_files = [f for f in os.listdir(log_dir) if f.endswith(".tmp")]
+        assert tmp_files == []
+
+
+# ── Log rotation ──────────────────────────────────────────────────────────────
+
+class TestRotateLogs:
+    def test_deletes_files_older_than_retention(self, log_dir, monkeypatch):
+        from web.tasks import _rotate_logs
+        os.makedirs(log_dir, exist_ok=True)
+        # Write a file dated 91 days ago
+        old_date = (
+            __import__("datetime").datetime.now()
+            - __import__("datetime").timedelta(days=91)
+        ).strftime("%Y-%m-%d")
+        old_file = os.path.join(log_dir, f"run_abc123_{old_date}.log")
+        open(old_file, "w").close()
+        _rotate_logs()
+        assert not os.path.exists(old_file)
+
+    def test_keeps_files_within_retention(self, log_dir, monkeypatch):
+        from web.tasks import _rotate_logs
+        os.makedirs(log_dir, exist_ok=True)
+        recent_date = (
+            __import__("datetime").datetime.now()
+            - __import__("datetime").timedelta(days=10)
+        ).strftime("%Y-%m-%d")
+        recent_file = os.path.join(log_dir, f"run_abc123_{recent_date}.log")
+        open(recent_file, "w").close()
+        _rotate_logs()
+        assert os.path.exists(recent_file)
+
+    def test_keeps_files_exactly_at_boundary(self, log_dir):
+        from web.tasks import _rotate_logs
+        os.makedirs(log_dir, exist_ok=True)
+        boundary_date = (
+            __import__("datetime").datetime.now()
+            - __import__("datetime").timedelta(days=90)
+        ).strftime("%Y-%m-%d")
+        boundary_file = os.path.join(log_dir, f"run_abc123_{boundary_date}.log")
+        open(boundary_file, "w").close()
+        _rotate_logs()
+        assert os.path.exists(boundary_file)
+
+    def test_no_crash_when_log_dir_missing(self, log_dir):
+        from web.tasks import _rotate_logs
+        # log_dir doesn't exist yet — should not raise
+        assert not os.path.isdir(log_dir)
+        _rotate_logs()  # should be silent
+
+    def test_ignores_files_with_unexpected_names(self, log_dir):
+        from web.tasks import _rotate_logs
+        os.makedirs(log_dir, exist_ok=True)
+        odd_file = os.path.join(log_dir, "run_no_date.log")
+        open(odd_file, "w").close()
+        _rotate_logs()  # should not crash or delete it
+        assert os.path.exists(odd_file)

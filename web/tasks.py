@@ -6,17 +6,29 @@ Each task has:
   logs     - list of strings emitted during the run
   result   - dict with outcome data (set on completion)
 
-Tasks are stored in memory for quick access and persisted to database for recovery across restarts.
+Tasks are persisted to the DB for recovery across restarts, and also written
+to LOG_DIR (default: /data/logs) as run_{task_id}_{YYYY-MM-DD}.log.
+Files older than _LOG_RETENTION_DAYS (90 days) are deleted on each new task start.
 """
+import glob
+import logging
 import os
 import sys
 import threading
 import time
 import traceback
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+_LOG_RETENTION_DAYS = 90
+_LOG_DIR = os.environ.get(
+    "LOG_DIR",
+    str(Path(__file__).parent.parent / "logs"),
+)
 
 import requests
 
@@ -69,6 +81,45 @@ def _stop_keepalive():
     with _active_lock:
         global _active_tasks
         _active_tasks = max(0, _active_tasks - 1)
+
+
+def _rotate_logs() -> None:
+    """Delete log files older than _LOG_RETENTION_DAYS."""
+    if not os.path.isdir(_LOG_DIR):
+        return
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff = today - timedelta(days=_LOG_RETENTION_DAYS)
+    for path in glob.glob(os.path.join(_LOG_DIR, "run_*.log")):
+        fname = os.path.basename(path)
+        # filename: run_<task_id>_<YYYY-MM-DD>.log — date is always last segment
+        try:
+            date_str = fname.rsplit("_", 1)[1].replace(".log", "")
+            if datetime.strptime(date_str, "%Y-%m-%d") < cutoff:
+                os.remove(path)
+        except (IndexError, ValueError, OSError):
+            pass
+
+
+def _write_task_log(task_id: str, task: dict) -> None:
+    """Flush task logs to a dated file on disk (atomic write)."""
+    try:
+        os.makedirs(_LOG_DIR, exist_ok=True)
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        path = os.path.join(_LOG_DIR, f"run_{task_id}_{date_str}.log")
+        tmp_path = path + ".tmp"
+        header = [
+            f"Task ID: {task_id}",
+            f"Status:  {task.get('status', 'unknown')}",
+            f"Started: {task.get('started_at', '')}",
+            f"Ended:   {task.get('ended_at', '')}",
+            "---",
+        ]
+        content = "\n".join(header + task.get("logs", [])) + "\n"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, path)
+    except Exception as exc:
+        logger.warning("Failed to write task log for %s: %s", task_id, exc)
 
 
 def _make_id() -> str:
@@ -147,6 +198,15 @@ def create_task(fn: Callable, *args, **kwargs) -> str:
         finally:
             _save_task_to_db()
             _stop_keepalive()
+            with _lock:
+                task_data = _tasks.get(task_id)
+                task_snapshot = (
+                    {**task_data, "logs": list(task_data["logs"])}
+                    if task_data else None
+                )
+            if task_snapshot:
+                _rotate_logs()
+                _write_task_log(task_id, task_snapshot)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()

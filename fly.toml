@@ -12,6 +12,7 @@ primary_region = 'ewr'
 [env]
   CONFIG_DIR = '/data/config'
   DB_PATH = '/data/jobs.db'
+  LOG_DIR = '/data/logs'
   OUTPUT_DIR = '/data/output'
   PROFILE_DIR = '/data/profile'
 
