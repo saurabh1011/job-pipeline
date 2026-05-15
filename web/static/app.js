@@ -601,7 +601,12 @@ const App = (() => {
       if (el) el.classList.toggle("active", active);
       if (btn) btn.classList.toggle("active", active);
     });
-    if (view === "settings") _loadSettingsData();
+    if (view === "settings") {
+      // Close job detail so fixed-position panel doesn't overlay settings
+      document.getElementById("detail-pane").classList.remove("open");
+      _currentJob = null;
+      _loadSettingsData();
+    }
   }
 
   function openSettings() { switchView("settings"); }
@@ -622,7 +627,7 @@ const App = (() => {
 
   function settingsTab(tab) {
     ["companies", "preferences", "runs", "logs"].forEach(t => {
-      document.getElementById(`settings-tab-${t}`).style.display = t === tab ? "" : "none";
+      document.getElementById(`settings-tab-${t}`).classList.toggle("settings-body--active", t === tab);
       const btn = document.querySelector(`.settings-tab[data-tab="${t}"]`);
       if (btn) btn.classList.toggle("active", t === tab);
     });
