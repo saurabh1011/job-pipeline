@@ -37,197 +37,201 @@
         </select>
         <button class="btn-warn" onclick="App.triggerRun()">Run</button>
       </div>
-      <button class="btn-ghost settings-gear-btn" onclick="App.openSettings()" title="Settings">&#9881;</button>
     </div>
   </header>
 
+  <!-- Top-level view tabs -->
+  <nav id="main-tabs">
+    <button class="main-tab active" data-view="jobs" onclick="App.switchView('jobs')">Jobs</button>
+    <button class="main-tab" data-view="settings" onclick="App.switchView('settings')">Settings</button>
+  </nav>
+
   <main>
-    <!-- Job list -->
-    <div id="list-pane">
-      <!-- Filters -->
-      <div class="filter-row">
-        <div id="dd-status"></div>
-        <div id="dd-company"></div>
-        <div id="dd-location"></div>
-        <select id="date-filter" onchange="App.setDateFilter(this.value)">
-          <option value="all">Any time</option>
-          <option value="7">Last 7 days</option>
-          <option value="14">Last 14 days</option>
-          <option value="30">Last 30 days</option>
-        </select>
-        <button id="select-btn" class="btn-ghost btn-sm" onclick="App.toggleSelectMode()">Select</button>
+    <!-- Jobs view -->
+    <div id="jobs-view" class="main-view active">
+      <!-- Job list -->
+      <div id="list-pane">
+        <!-- Filters -->
+        <div class="filter-row">
+          <div id="dd-status"></div>
+          <div id="dd-company"></div>
+          <div id="dd-location"></div>
+          <select id="date-filter" onchange="App.setDateFilter(this.value)">
+            <option value="all">Any time</option>
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+          <button id="select-btn" class="btn-ghost btn-sm" onclick="App.toggleSelectMode()">Select</button>
+        </div>
+
+        <div id="job-count" class="job-count"></div>
+        <div id="job-list"></div>
+
+        <!-- Bulk action bar (visible when items selected) -->
+        <div id="bulk-bar">
+          <span id="bulk-count">0 selected</span>
+          <div class="bulk-actions">
+            <select id="bulk-status-select" class="status-select">
+              <option value="">Move to…</option>
+              <option value="approved">Approved</option>
+              <option value="applied">Applied</option>
+              <option value="interviewing">Interviewing</option>
+              <option value="offer">Offer</option>
+              <option value="rejected">Rejected</option>
+              <option value="skipped">Skipped</option>
+              <option value="interesting">Interesting</option>
+              <option value="alerted">Alerted</option>
+              <option value="new">New</option>
+            </select>
+            <button class="btn-primary btn-sm" onclick="App.bulkStatusFromSelect()">Apply</button>
+            <button class="btn-ghost btn-sm"   onclick="App.clearSelection()">Clear</button>
+          </div>
+        </div>
       </div>
 
-      <div id="job-count" class="job-count"></div>
-      <div id="job-list"></div>
-
-      <!-- Bulk action bar (visible when items selected) -->
-      <div id="bulk-bar">
-        <span id="bulk-count">0 selected</span>
-        <div class="bulk-actions">
-          <select id="bulk-status-select" class="status-select">
-            <option value="">Move to…</option>
-            <option value="approved">Approved</option>
-            <option value="applied">Applied</option>
-            <option value="interviewing">Interviewing</option>
-            <option value="offer">Offer</option>
-            <option value="rejected">Rejected</option>
-            <option value="skipped">Skipped</option>
-            <option value="interesting">Interesting</option>
-            <option value="alerted">Alerted</option>
-            <option value="new">New</option>
-          </select>
-          <button class="btn-primary btn-sm" onclick="App.bulkStatusFromSelect()">Apply</button>
-          <button class="btn-ghost btn-sm"   onclick="App.clearSelection()">Clear</button>
+      <!-- Job detail -->
+      <div id="detail-pane">
+        <div class="detail-header">
+          <button class="back-btn" onclick="App.closeDetail()">&#8592;</button>
+          <div class="detail-title-block">
+            <div id="detail-title" class="detail-title"></div>
+            <div id="detail-sub" class="detail-sub"></div>
+          </div>
+          <div id="detail-score" class="score-large"></div>
+        </div>
+        <div class="detail-body">
+          <div class="action-bar" id="action-bar"></div>
+          <div class="detail-tabs">
+            <button id="tab-desc-btn" class="detail-tab active" onclick="App.showTab(this,'tab-desc')">Description</button>
+            <button class="detail-tab" onclick="App.showTab(this,'tab-cover')">Cover Letter</button>
+            <button class="detail-tab" onclick="App.showTab(this,'tab-diff')">Resume Diff</button>
+          </div>
+          <div id="tab-desc" class="detail-tab-content active">
+            <div id="match-analysis"></div>
+            <div id="desc-content"></div>
+          </div>
+          <div id="tab-cover" class="detail-tab-content">
+            <div id="cover-letter-content"></div>
+          </div>
+          <div id="tab-diff" class="detail-tab-content">
+            <div id="diff-content"></div>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Job detail -->
-    <div id="detail-pane">
-      <div class="detail-header">
-        <button class="back-btn" onclick="App.closeDetail()">&#8592;</button>
-        <div class="detail-title-block">
-          <div id="detail-title" class="detail-title"></div>
-          <div id="detail-sub" class="detail-sub"></div>
-        </div>
-        <div id="detail-score" class="score-large"></div>
+    <!-- Settings view -->
+    <div id="settings-view" class="main-view">
+      <div class="settings-tabs">
+        <button class="settings-tab active" data-tab="companies" onclick="App.settingsTab('companies')">Companies</button>
+        <button class="settings-tab" data-tab="preferences" onclick="App.settingsTab('preferences')">Preferences</button>
+        <button class="settings-tab" data-tab="runs" onclick="App.settingsTab('runs')">Run History</button>
+        <button class="settings-tab" data-tab="logs" onclick="App.settingsTab('logs')">Logs</button>
       </div>
-      <div class="detail-body">
-        <div class="action-bar" id="action-bar"></div>
-        <div class="detail-tabs">
-          <button id="tab-desc-btn" class="detail-tab active" onclick="App.showTab(this,'tab-desc')">Description</button>
-          <button class="detail-tab" onclick="App.showTab(this,'tab-cover')">Cover Letter</button>
-          <button class="detail-tab" onclick="App.showTab(this,'tab-diff')">Resume Diff</button>
+
+      <!-- Companies tab -->
+      <div id="settings-tab-companies" class="settings-body">
+        <div id="settings-company-list"></div>
+        <div class="add-company-section">
+          <div class="add-company-header">Add Company</div>
+          <div class="add-company-form">
+            <input id="new-company-name" class="settings-input" placeholder="Company name…"
+                   onkeydown="if(event.key==='Enter') App.detectAts()">
+            <button id="detect-btn" class="btn-primary btn-sm" onclick="App.detectAts()">Auto-detect</button>
+          </div>
+          <div id="detect-result" style="display:none">
+            <div id="detect-status" class="detect-status"></div>
+            <div class="add-company-form" style="margin-top:8px">
+              <select id="new-ats" class="settings-select">
+                <option value="greenhouse">Greenhouse</option>
+                <option value="ashby">Ashby</option>
+                <option value="lever">Lever</option>
+                <option value="google">Google (custom)</option>
+                <option value="apple">Apple (custom)</option>
+                <option value="meta">Meta (custom)</option>
+                <option value="microsoft">Microsoft (custom)</option>
+                <option value="uber">Uber (custom)</option>
+                <option value="walmart">Walmart (custom)</option>
+                <option value="netflix">Netflix (custom)</option>
+                <option value="zillow">Zillow (custom)</option>
+                <option value="amazon">Amazon (custom)</option>
+                <option value="linkedin">LinkedIn (custom)</option>
+              </select>
+              <input id="new-slug" class="settings-input" placeholder="board_slug (if needed)">
+            </div>
+            <button class="btn-success btn-sm" style="margin-top:8px;width:100%" onclick="App.addCompany()">Add Company</button>
+          </div>
         </div>
-        <div id="tab-desc" class="detail-tab-content active">
-          <div id="match-analysis"></div>
-          <div id="desc-content"></div>
+      </div>
+
+      <!-- Preferences tab -->
+      <div id="settings-tab-preferences" class="settings-body" style="display:none">
+        <div class="pref-section">
+          <div class="pref-label">Match threshold (1–10)</div>
+          <input type="number" id="pref-threshold" class="settings-input" min="1" max="10" style="width:70px">
         </div>
-        <div id="tab-cover" class="detail-tab-content">
-          <div id="cover-letter-content"></div>
+        <div class="pref-section">
+          <div class="pref-label">LLM provider</div>
+          <select id="pref-llm" class="settings-select">
+            <option value="gemini">Gemini</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="openai">OpenAI</option>
+            <option value="ollama">Ollama</option>
+          </select>
         </div>
-        <div id="tab-diff" class="detail-tab-content">
-          <div id="diff-content"></div>
+        <div class="pref-section">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="pref-us-only" style="accent-color:var(--accent)">
+            <span class="pref-label" style="margin:0">US only</span>
+          </label>
+        </div>
+        <div class="pref-section">
+          <div class="pref-label">Title keywords (include)</div>
+          <div class="chip-list" id="chips-title_keywords"></div>
+        </div>
+        <div class="pref-section">
+          <div class="pref-label">Title keywords (exclude)</div>
+          <div class="chip-list" id="chips-title_exclude_keywords"></div>
+        </div>
+        <div class="pref-section">
+          <div class="pref-label">Preferred locations</div>
+          <div class="chip-list" id="chips-preferred_locations"></div>
+        </div>
+        <div class="pref-section">
+          <div class="pref-label">Acceptable locations</div>
+          <div class="chip-list" id="chips-acceptable_locations"></div>
+        </div>
+        <div class="pref-section">
+          <div class="pref-label">Excluded location keywords</div>
+          <div class="chip-list" id="chips-excluded_location_keywords"></div>
+        </div>
+        <div class="pref-actions">
+          <button id="save-prefs-btn" class="btn-primary" style="width:100%" onclick="App.savePreferences()">Save Preferences</button>
+        </div>
+      </div>
+
+      <!-- Run History tab -->
+      <div id="settings-tab-runs" class="settings-body" style="display:none">
+        <div id="runs-list"><div class="settings-empty">Loading...</div></div>
+      </div>
+
+      <!-- Logs tab -->
+      <div id="settings-tab-logs" class="settings-body" style="display:none">
+        <div id="logs-pane">
+          <div id="logs-file-list"><div class="settings-empty">Loading...</div></div>
+          <div id="logs-file-content" style="display:none">
+            <div class="logs-content-header">
+              <button class="btn-ghost btn-sm" onclick="App.closeLogFile()">&#8592; Back</button>
+              <span id="logs-content-title"></span>
+            </div>
+            <pre id="logs-content-body"></pre>
+          </div>
         </div>
       </div>
     </div>
   </main>
 
-</div>
-
-<!-- Settings panel -->
-<div id="settings-panel">
-  <div class="settings-header">
-    <span>Settings</span>
-    <button class="drawer-close" onclick="App.closeSettings()">&#x2715;</button>
-  </div>
-  <div class="settings-tabs">
-    <button class="settings-tab active" data-tab="companies" onclick="App.settingsTab('companies')">Companies</button>
-    <button class="settings-tab" data-tab="preferences" onclick="App.settingsTab('preferences')">Preferences</button>
-    <button class="settings-tab" data-tab="runs" onclick="App.settingsTab('runs')">Run History</button>
-    <button class="settings-tab" data-tab="logs" onclick="App.settingsTab('logs')">Logs</button>
-  </div>
-
-  <!-- Companies tab -->
-  <div id="settings-tab-companies" class="settings-body">
-    <div id="settings-company-list"></div>
-    <div class="add-company-section">
-      <div class="add-company-header">Add Company</div>
-      <div class="add-company-form">
-        <input id="new-company-name" class="settings-input" placeholder="Company name…"
-               onkeydown="if(event.key==='Enter') App.detectAts()">
-        <button id="detect-btn" class="btn-primary btn-sm" onclick="App.detectAts()">Auto-detect</button>
-      </div>
-      <div id="detect-result" style="display:none">
-        <div id="detect-status" class="detect-status"></div>
-        <div class="add-company-form" style="margin-top:8px">
-          <select id="new-ats" class="settings-select">
-            <option value="greenhouse">Greenhouse</option>
-            <option value="ashby">Ashby</option>
-            <option value="lever">Lever</option>
-            <option value="google">Google (custom)</option>
-            <option value="apple">Apple (custom)</option>
-            <option value="meta">Meta (custom)</option>
-            <option value="microsoft">Microsoft (custom)</option>
-            <option value="uber">Uber (custom)</option>
-            <option value="walmart">Walmart (custom)</option>
-            <option value="netflix">Netflix (custom)</option>
-            <option value="zillow">Zillow (custom)</option>
-            <option value="amazon">Amazon (custom)</option>
-            <option value="linkedin">LinkedIn (custom)</option>
-          </select>
-          <input id="new-slug" class="settings-input" placeholder="board_slug (if needed)">
-        </div>
-        <button class="btn-success btn-sm" style="margin-top:8px;width:100%" onclick="App.addCompany()">Add Company</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Preferences tab -->
-  <div id="settings-tab-preferences" class="settings-body" style="display:none">
-    <div class="pref-section">
-      <div class="pref-label">Match threshold (1–10)</div>
-      <input type="number" id="pref-threshold" class="settings-input" min="1" max="10" style="width:70px">
-    </div>
-    <div class="pref-section">
-      <div class="pref-label">LLM provider</div>
-      <select id="pref-llm" class="settings-select">
-        <option value="gemini">Gemini</option>
-        <option value="anthropic">Anthropic</option>
-        <option value="openai">OpenAI</option>
-        <option value="ollama">Ollama</option>
-      </select>
-    </div>
-    <div class="pref-section">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-        <input type="checkbox" id="pref-us-only" style="accent-color:var(--accent)">
-        <span class="pref-label" style="margin:0">US only</span>
-      </label>
-    </div>
-    <div class="pref-section">
-      <div class="pref-label">Title keywords (include)</div>
-      <div class="chip-list" id="chips-title_keywords"></div>
-    </div>
-    <div class="pref-section">
-      <div class="pref-label">Title keywords (exclude)</div>
-      <div class="chip-list" id="chips-title_exclude_keywords"></div>
-    </div>
-    <div class="pref-section">
-      <div class="pref-label">Preferred locations</div>
-      <div class="chip-list" id="chips-preferred_locations"></div>
-    </div>
-    <div class="pref-section">
-      <div class="pref-label">Acceptable locations</div>
-      <div class="chip-list" id="chips-acceptable_locations"></div>
-    </div>
-    <div class="pref-section">
-      <div class="pref-label">Excluded location keywords</div>
-      <div class="chip-list" id="chips-excluded_location_keywords"></div>
-    </div>
-    <div class="pref-actions">
-      <button id="save-prefs-btn" class="btn-primary" style="width:100%" onclick="App.savePreferences()">Save Preferences</button>
-    </div>
-  </div>
-
-  <!-- Run History tab -->
-  <div id="settings-tab-runs" class="settings-body" style="display:none">
-    <div id="runs-list"><div class="settings-empty">Loading...</div></div>
-  </div>
-
-  <!-- Logs tab -->
-  <div id="settings-tab-logs" class="settings-body" style="display:none">
-    <div id="logs-pane">
-      <div id="logs-file-list"><div class="settings-empty">Loading...</div></div>
-      <div id="logs-file-content" style="display:none">
-        <div class="logs-content-header">
-          <button class="btn-ghost btn-sm" onclick="App.closeLogFile()">&#8592; Back</button>
-          <span id="logs-content-title"></span>
-        </div>
-        <pre id="logs-content-body"></pre>
-      </div>
-    </div>
-  </div>
 </div>
 
 <!-- Task progress drawer -->
@@ -239,6 +243,6 @@
   <div id="task-log"></div>
 </div>
 
-<script src="/static/app.js?v=12"></script>
+<script src="/static/app.js?v=13"></script>
 </body>
 </html>

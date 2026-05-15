@@ -593,14 +593,19 @@ const App = (() => {
     "preferred_locations", "acceptable_locations", "excluded_location_keywords",
   ];
 
-  function openSettings() {
-    document.getElementById("settings-panel").classList.add("open");
-    _loadSettingsData();
+  function switchView(view) {
+    ["jobs", "settings"].forEach(v => {
+      const el = document.getElementById(`${v}-view`);
+      const btn = document.querySelector(`.main-tab[data-view="${v}"]`);
+      const active = v === view;
+      if (el) el.classList.toggle("active", active);
+      if (btn) btn.classList.toggle("active", active);
+    });
+    if (view === "settings") _loadSettingsData();
   }
 
-  function closeSettings() {
-    document.getElementById("settings-panel").classList.remove("open");
-  }
+  function openSettings() { switchView("settings"); }
+  function closeSettings() { switchView("jobs"); }
 
   async function _loadSettingsData() {
     try {
@@ -1075,7 +1080,7 @@ const App = (() => {
            triggerRun,
            closeDrawer, submitApiKey,
            toggleSelectMode, toggleCheck, clearSelection, bulkStatus,
-           openSettings, closeSettings, settingsTab,
+           switchView, openSettings, closeSettings, settingsTab,
            removeCompany, detectAts, addCompany,
            removeChip, chipKeydown, savePreferences,
            _loadRunsTab,
