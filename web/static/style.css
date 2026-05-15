@@ -268,3 +268,16 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .apply-link:hover { text-decoration: underline; }
 
 .section-empty { color: var(--text-muted); font-size: 13px; font-style: italic; }
+
+/* Logs tab */
+#logs-pane { display: flex; flex-direction: column; height: 100%; }
+.log-file-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.1s; }
+.log-file-row:hover { background: var(--surface2); }
+.log-file-info { display: flex; flex-direction: column; gap: 2px; }
+.log-file-date { font-size: 13px; font-weight: 500; color: var(--text); }
+.log-file-id { font-size: 11px; color: var(--text-muted); font-family: monospace; }
+.log-file-size { font-size: 11px; color: var(--text-muted); }
+#logs-file-content { display: flex; flex-direction: column; height: 100%; }
+.logs-content-header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#logs-content-title { font-size: 12px; color: var(--text-muted); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#logs-content-body { flex: 1; overflow-y: auto; margin: 0; padding: 12px 16px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; color: var(--text); background: var(--bg); }

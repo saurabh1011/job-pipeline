@@ -616,12 +616,13 @@ const App = (() => {
   }
 
   function settingsTab(tab) {
-    ["companies", "preferences", "runs"].forEach(t => {
+    ["companies", "preferences", "runs", "logs"].forEach(t => {
       document.getElementById(`settings-tab-${t}`).style.display = t === tab ? "" : "none";
       const btn = document.querySelector(`.settings-tab[data-tab="${t}"]`);
       if (btn) btn.classList.toggle("active", t === tab);
     });
     if (tab === "runs") _loadRunsTab();
+    if (tab === "logs") _loadLogsTab();
   }
 
   async function _loadRunsTab() {
@@ -686,6 +687,57 @@ const App = (() => {
       </tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
+  }
+
+  // ── Settings: logs ────────────────────────────────────────────────────────
+
+  async function _loadLogsTab() {
+    const listEl = document.getElementById("logs-file-list");
+    const contentEl = document.getElementById("logs-file-content");
+    contentEl.style.display = "none";
+    listEl.style.display = "";
+    listEl.innerHTML = '<div class="settings-empty">Loading...</div>';
+    try {
+      const files = await _api("GET", "/api/logs");
+      if (!files.length) {
+        listEl.innerHTML = '<div class="settings-empty">No log files found. Run the pipeline to generate logs.</div>';
+        return;
+      }
+      listEl.innerHTML = files.map(f => {
+        const kb = (f.size_bytes / 1024).toFixed(1);
+        return `<div class="log-file-row" onclick="App.loadLogFile('${_esc(f.filename)}')">
+          <div class="log-file-info">
+            <span class="log-file-date">${_esc(f.date)}</span>
+            <span class="log-file-id">${_esc(f.task_id)}</span>
+          </div>
+          <span class="log-file-size">${kb} KB</span>
+        </div>`;
+      }).join("");
+    } catch (e) {
+      listEl.innerHTML = `<div class="settings-empty">Failed to load logs: ${_esc(e.message)}</div>`;
+    }
+  }
+
+  async function loadLogFile(filename) {
+    const listEl = document.getElementById("logs-file-list");
+    const contentEl = document.getElementById("logs-file-content");
+    const titleEl = document.getElementById("logs-content-title");
+    const bodyEl = document.getElementById("logs-content-body");
+    listEl.style.display = "none";
+    contentEl.style.display = "";
+    titleEl.textContent = filename;
+    bodyEl.textContent = "Loading…";
+    try {
+      const data = await _api("GET", `/api/logs/${encodeURIComponent(filename)}`);
+      bodyEl.textContent = data.content;
+    } catch (e) {
+      bodyEl.textContent = `Error: ${e.message}`;
+    }
+  }
+
+  function closeLogFile() {
+    document.getElementById("logs-file-list").style.display = "";
+    document.getElementById("logs-file-content").style.display = "none";
   }
 
   // ── Settings: companies ────────────────────────────────────────────────────
@@ -1026,5 +1078,6 @@ const App = (() => {
            openSettings, closeSettings, settingsTab,
            removeCompany, detectAts, addCompany,
            removeChip, chipKeydown, savePreferences,
-           _loadRunsTab };
+           _loadRunsTab,
+           loadLogFile, closeLogFile };
 })();

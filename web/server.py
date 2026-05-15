@@ -714,6 +714,46 @@ def task_status(task_id: str, _=Depends(require_api_key)):
     return task
 
 
+# ── Log file endpoints ───────────────────────────────────────────────────────
+
+@app.get("/api/logs")
+def list_logs(_=Depends(require_api_key)):
+    """Return metadata for the last 20 run log files, newest first."""
+    import glob as _glob
+    pattern = os.path.join(LOG_DIR, "run_*.log")
+    files = []
+    for path in _glob.glob(pattern):
+        fname = os.path.basename(path)
+        try:
+            # filename: run_<task_id>_<YYYY-MM-DD>.log
+            parts = fname[len("run_"):-len(".log")].rsplit("_", 1)
+            task_id = parts[0]
+            date_str = parts[1]
+            size = os.path.getsize(path)
+            files.append({"filename": fname, "task_id": task_id,
+                          "date": date_str, "size_bytes": size})
+        except (IndexError, OSError):
+            continue
+    files.sort(key=lambda f: f["date"], reverse=True)
+    return files[:20]
+
+
+@app.get("/api/logs/{filename}")
+def get_log(filename: str, _=Depends(require_api_key)):
+    """Return the content of a single log file."""
+    # Reject any path traversal attempts
+    if "/" in filename or "\\" in filename or not filename.startswith("run_"):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    path = os.path.join(LOG_DIR, filename)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Log file not found")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {"filename": filename, "content": f.read()}
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Static files & SPA ───────────────────────────────────────────────────────
 
 app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")

@@ -126,6 +126,7 @@
     <button class="settings-tab active" data-tab="companies" onclick="App.settingsTab('companies')">Companies</button>
     <button class="settings-tab" data-tab="preferences" onclick="App.settingsTab('preferences')">Preferences</button>
     <button class="settings-tab" data-tab="runs" onclick="App.settingsTab('runs')">Run History</button>
+    <button class="settings-tab" data-tab="logs" onclick="App.settingsTab('logs')">Logs</button>
   </div>
 
   <!-- Companies tab -->
@@ -213,6 +214,20 @@
   <div id="settings-tab-runs" class="settings-body" style="display:none">
     <div id="runs-list"><div class="settings-empty">Loading...</div></div>
   </div>
+
+  <!-- Logs tab -->
+  <div id="settings-tab-logs" class="settings-body" style="display:none">
+    <div id="logs-pane">
+      <div id="logs-file-list"><div class="settings-empty">Loading...</div></div>
+      <div id="logs-file-content" style="display:none">
+        <div class="logs-content-header">
+          <button class="btn-ghost btn-sm" onclick="App.closeLogFile()">&#8592; Back</button>
+          <span id="logs-content-title"></span>
+        </div>
+        <pre id="logs-content-body"></pre>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Task progress drawer -->
@@ -224,6 +239,6 @@
   <div id="task-log"></div>
 </div>
 
-<script src="/static/app.js?v=11"></script>
+<script src="/static/app.js?v=12"></script>
 </body>
 </html>

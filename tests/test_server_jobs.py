@@ -534,3 +534,87 @@ class TestDoRunEmailIntegration:
         assert len(all_scored) == 2
         assert all(j["match_score"] >= 7 for j in alert_jobs)
         assert len(alert_jobs) == 1
+
+
+class TestLogEndpoints:
+    @pytest.fixture()
+    def log_dir(self, tmp_path):
+        return tmp_path / "logs"
+
+    @pytest.fixture()
+    def log_client(self, cfg_dir, db_path, monkeypatch, log_dir):
+        log_dir.mkdir()
+        monkeypatch.setattr(server_module, "CONFIG_DIR", str(cfg_dir))
+        monkeypatch.setattr(server_module, "DB_PATH", db_path)
+        monkeypatch.setattr(server_module, "LOG_DIR", str(log_dir))
+        monkeypatch.delenv("WEB_API_KEY", raising=False)
+        with TestClient(app) as c:
+            yield c, log_dir
+
+    def test_list_logs_returns_files_sorted_by_date(self, log_client):
+        client, log_dir = log_client
+        (log_dir / "run_abc123_2026-05-10.log").write_text("older log")
+        (log_dir / "run_def456_2026-05-14.log").write_text("newer log")
+        resp = client.get("/api/logs")
+        assert resp.status_code == 200
+        files = resp.json()
+        assert len(files) == 2
+        assert files[0]["date"] == "2026-05-14"
+        assert files[0]["task_id"] == "def456"
+        assert files[1]["date"] == "2026-05-10"
+        assert files[1]["task_id"] == "abc123"
+
+    def test_list_logs_returns_empty_when_no_files(self, log_client):
+        client, log_dir = log_client
+        resp = client.get("/api/logs")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_list_logs_caps_at_20(self, log_client):
+        client, log_dir = log_client
+        for i in range(25):
+            day = f"2026-05-{i+1:02d}" if i < 9 else f"2026-05-{i+1}"
+            # Use a safe date range: 01–25
+            day = f"2026-04-{i+1:02d}"
+            (log_dir / f"run_task{i}_{day}.log").write_text(f"log {i}")
+        resp = client.get("/api/logs")
+        assert resp.status_code == 200
+        assert len(resp.json()) == 20
+
+    def test_list_logs_includes_size(self, log_client):
+        client, log_dir = log_client
+        content = "hello world"
+        (log_dir / "run_xyz_2026-05-15.log").write_text(content)
+        resp = client.get("/api/logs")
+        files = resp.json()
+        assert files[0]["size_bytes"] == len(content.encode())
+
+    def test_get_log_returns_content(self, log_client):
+        client, log_dir = log_client
+        content = "line1\nline2\nline3\n"
+        (log_dir / "run_abc_2026-05-15.log").write_text(content)
+        resp = client.get("/api/logs/run_abc_2026-05-15.log")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["filename"] == "run_abc_2026-05-15.log"
+        assert body["content"] == content
+
+    def test_get_log_returns_404_for_missing_file(self, log_client):
+        client, _ = log_client
+        resp = client.get("/api/logs/run_missing_2026-05-15.log")
+        assert resp.status_code == 404
+
+    def test_get_log_rejects_path_traversal(self, log_client):
+        client, _ = log_client
+        resp = client.get("/api/logs/..%2Fsecrets.txt")
+        assert resp.status_code in (400, 404, 422)
+
+    def test_get_log_rejects_non_run_filename(self, log_client):
+        client, _ = log_client
+        resp = client.get("/api/logs/secrets.txt")
+        assert resp.status_code == 400
+
+    def test_get_log_rejects_backslash_traversal(self, log_client):
+        client, _ = log_client
+        resp = client.get("/api/logs/run_..\\etc\\passwd.log")
+        assert resp.status_code == 400
