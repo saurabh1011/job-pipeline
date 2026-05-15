@@ -585,6 +585,83 @@ class TestFetchAllCompaniesTimeout:
 
         assert captured_prefs["title_keywords"] == PREFERENCES["title_keywords"]
 
+    def test_playwright_company_timeout_sets_fetch_error(self):
+        """A Playwright company that exceeds fetch_timeout is added to fetch_errors."""
+        import pipeline.fetcher as fetcher_module
+        company = {"name": "Google", "ats": "google", "fetch_timeout": 1}
+        fetch_errors = {}
+        logs = []
+
+        def slow_playwright_fetch(prefs, page, log=None, timed_out_urls=None):
+            time.sleep(5)
+            return []
+
+        mock_fetcher_instance = MagicMock()
+        mock_fetcher_instance.fetch = slow_playwright_fetch
+        mock_fetcher_cls = MagicMock(return_value=mock_fetcher_instance)
+
+        mock_page = MagicMock()
+        mock_browser = MagicMock()
+        mock_browser.new_page.return_value = mock_page
+        mock_pw_ctx = MagicMock()
+        mock_pw_ctx.chromium.launch.return_value = mock_browser
+        mock_sp_instance = MagicMock()
+        mock_sp_instance.__enter__ = lambda s: mock_pw_ctx
+        mock_sp_instance.__exit__ = MagicMock(return_value=False)
+
+        orig_ats = fetcher_module._PLAYWRIGHT_ATS
+        fetcher_module._PLAYWRIGHT_ATS = {"google"}
+        try:
+            with patch("playwright.sync_api.sync_playwright", return_value=mock_sp_instance), \
+                 patch("pipeline.playwright_fetcher._PLAYWRIGHT_FETCHER_MAP", {"google": mock_fetcher_cls}):
+                fetch_all_companies([company], PREFERENCES, log=logs.append, fetch_errors=fetch_errors)
+        finally:
+            fetcher_module._PLAYWRIGHT_ATS = orig_ats
+
+        assert "Google" in fetch_errors
+        assert "TIMEOUT" in fetch_errors["Google"]
+        assert any("TIMEOUT" in m for m in logs)
+
+    def test_playwright_description_skips_populate_fetch_errors(self):
+        """Description-level timeouts are reported in fetch_errors after a successful fetch."""
+        import pipeline.fetcher as fetcher_module
+        company = {"name": "Google", "ats": "google", "fetch_timeout": 30}
+        fetch_errors = {}
+
+        def fetch_with_skips(prefs, page, log=None, timed_out_urls=None):
+            if timed_out_urls is not None:
+                timed_out_urls.append("https://careers.google.com/jobs/results/123")
+                timed_out_urls.append("https://careers.google.com/jobs/results/456")
+            return [{"job_id": "1", "company": "Google", "title": "EM", "location": "NY",
+                     "url": "https://x.com", "apply_url": "https://x.com", "description": ""}]
+
+        mock_fetcher_instance = MagicMock()
+        mock_fetcher_instance.fetch = fetch_with_skips
+        mock_fetcher_cls = MagicMock(return_value=mock_fetcher_instance)
+
+        mock_page = MagicMock()
+        mock_browser = MagicMock()
+        mock_browser.new_page.return_value = mock_page
+        mock_pw_ctx = MagicMock()
+        mock_pw_ctx.chromium.launch.return_value = mock_browser
+        mock_sp_instance = MagicMock()
+        mock_sp_instance.__enter__ = lambda s: mock_pw_ctx
+        mock_sp_instance.__exit__ = MagicMock(return_value=False)
+
+        orig_ats = fetcher_module._PLAYWRIGHT_ATS
+        fetcher_module._PLAYWRIGHT_ATS = {"google"}
+        try:
+            with patch("playwright.sync_api.sync_playwright", return_value=mock_sp_instance), \
+                 patch("pipeline.playwright_fetcher._PLAYWRIGHT_FETCHER_MAP", {"google": mock_fetcher_cls}):
+                jobs = fetch_all_companies([company], PREFERENCES, fetch_errors=fetch_errors)
+        finally:
+            fetcher_module._PLAYWRIGHT_ATS = orig_ats
+
+        assert len(jobs) == 1
+        assert "Google" in fetch_errors
+        assert "2" in fetch_errors["Google"]
+        assert "timed out" in fetch_errors["Google"]
+
 
 # ── WalmartFetcher ────────────────────────────────────────────────────────────
 

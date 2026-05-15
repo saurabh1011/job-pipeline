@@ -7,13 +7,17 @@ manually running `python3 run.py` against real sites.
 import pytest
 from unittest.mock import MagicMock, patch, call
 
+import time
+
 from pipeline.playwright_fetcher import (
     GooglePlaywrightFetcher,
     ApplePlaywrightFetcher,
     MetaPlaywrightFetcher,
     MicrosoftPlaywrightFetcher,
     _PLAYWRIGHT_FETCHER_MAP,
+    _get_description_safe,
 )
+import pipeline.playwright_fetcher as pf_module
 
 PREFERENCES = {
     "title_keywords": ["Engineering Manager", "Director of Engineering"],
@@ -307,6 +311,237 @@ class TestMicrosoftPlaywrightFetcher:
         fetcher = MicrosoftPlaywrightFetcher()
         jobs = fetcher.fetch(PREFERENCES, page)
         assert jobs == []
+
+
+# ── _get_description_safe ─────────────────────────────────────────────────────
+
+class TestGetDescriptionSafe:
+    def test_returns_description_on_success(self):
+        page = _mock_page()
+        result = _get_description_safe(lambda p, u: "job description", page, "https://example.com")
+        assert result == "job description"
+
+    def test_returns_empty_on_normal_empty(self):
+        page = _mock_page()
+        result = _get_description_safe(lambda p, u: "", page, "https://example.com")
+        assert result == ""
+
+    def test_times_out_and_closes_page_on_hang(self, monkeypatch):
+        monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 0.2)
+
+        page = _mock_page()
+        closed = []
+        page.close.side_effect = lambda: closed.append(True)
+
+        def hanging_fetch(p, url):
+            time.sleep(5)
+            return "never reached"
+
+        result = _get_description_safe(hanging_fetch, page, "https://example.com")
+        assert result == ""
+        assert closed == [True]
+
+    def test_does_not_close_page_on_normal_completion(self, monkeypatch):
+        monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 2.0)
+        page = _mock_page()
+        _get_description_safe(lambda p, u: "desc", page, "https://example.com")
+        page.close.assert_not_called()
+
+    def test_timeout_completes_within_reasonable_time(self, monkeypatch):
+        monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 0.2)
+        page = _mock_page()
+
+        def hanging_fetch(p, url):
+            time.sleep(5)
+            return "never"
+
+        t0 = time.time()
+        _get_description_safe(hanging_fetch, page, "https://example.com")
+        elapsed = time.time() - t0
+        assert elapsed < 1.0
+
+    def test_appends_to_timed_out_urls_on_timeout(self, monkeypatch):
+        monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 0.2)
+        page = _mock_page()
+        timed_out = []
+        _get_description_safe(
+            lambda p, u: time.sleep(5) or "",
+            page, "https://example.com/job/123",
+            timed_out_urls=timed_out,
+        )
+        assert timed_out == ["https://example.com/job/123"]
+
+    def test_does_not_append_on_success(self):
+        page = _mock_page()
+        timed_out = []
+        _get_description_safe(lambda p, u: "desc", page, "https://example.com", timed_out_urls=timed_out)
+        assert timed_out == []
+
+    def test_calls_log_on_timeout(self, monkeypatch):
+        monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 0.2)
+        page = _mock_page()
+        logged = []
+        _get_description_safe(
+            lambda p, u: time.sleep(5) or "",
+            page, "https://example.com/job/456",
+            log=logged.append,
+        )
+        assert any("SKIPPED" in m and "timed out" in m for m in logged)
+
+    def test_does_not_call_log_on_success(self):
+        page = _mock_page()
+        logged = []
+        _get_description_safe(lambda p, u: "desc", page, "https://example.com", log=logged.append)
+        assert logged == []
+
+
+class TestGoogleDescriptionCap:
+    def _make_card(self, idx, title="Engineering Manager, Ads"):
+        # Job IDs must be 15+ digit numbers (Google's ID format)
+        job_id = f"{100000000000000 + idx}"
+        card = MagicMock()
+        title_el = _el(title)
+        location_el = _el("New York, NY, USA")
+        link_el = _el(href=f"jobs/results/{job_id}-engineering-manager")
+        def qs(selector):
+            if "h3" in selector: return title_el
+            if "r0wTof" in selector: return location_el
+            if "jobs/results" in selector: return link_el
+            return None
+        card.query_selector.side_effect = qs
+        return card
+
+    def test_caps_at_max_descriptions(self, monkeypatch):
+        monkeypatch.setattr(pf_module, "_MAX_DESCRIPTIONS_PER_KEYWORD", 3)
+        # 20 cards triggers pagination break (< 20 cards → break), so use exactly 20
+        cards = [self._make_card(i) for i in range(20)]
+        page = _mock_page()
+        page.query_selector_all.return_value = cards
+        fetcher = GooglePlaywrightFetcher()
+        desc_calls = []
+        def fake_desc_safe(fn, p, url, **kwargs):
+            desc_calls.append(url)
+            return "desc"
+        with patch.object(pf_module, "_get_description_safe", side_effect=fake_desc_safe):
+            fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page, lambda x: None, set())
+        assert len(desc_calls) == 3
+
+    def test_all_descriptions_fetched_when_under_cap(self, monkeypatch):
+        monkeypatch.setattr(pf_module, "_MAX_DESCRIPTIONS_PER_KEYWORD", 50)
+        cards = [self._make_card(i) for i in range(5)]
+        page = _mock_page()
+        page.query_selector_all.return_value = cards
+        fetcher = GooglePlaywrightFetcher()
+        desc_calls = []
+        def fake_desc_safe(fn, p, url, **kwargs):
+            desc_calls.append(url)
+            return "desc"
+        with patch.object(pf_module, "_get_description_safe", side_effect=fake_desc_safe):
+            fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page, lambda x: None, set())
+        assert len(desc_calls) == 5
+
+
+# ── Integration: log + timed_out_urls threading through fetchers ──────────────
+
+class TestDescriptionTimeoutIntegration:
+    """Verify log and timed_out_urls flow end-to-end through each fetcher."""
+
+    def _make_google_card(self, idx, title="Engineering Manager, Ads"):
+        job_id = f"{100000000000000 + idx}"
+        card = MagicMock()
+        title_el = _el(title)
+        location_el = _el("New York, NY, USA")
+        link_el = _el(href=f"jobs/results/{job_id}-engineering-manager")
+        def qs(selector):
+            if "h3" in selector: return title_el
+            if "r0wTof" in selector: return location_el
+            if "jobs/results" in selector: return link_el
+            return None
+        card.query_selector.side_effect = qs
+        return card
+
+    def test_google_fetch_keyword_passes_log_and_timed_out_urls(self, monkeypatch):
+        """_fetch_keyword forwards log and timed_out_urls to _get_description_safe."""
+        monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 0.1)
+        cards = [self._make_google_card(0)]
+        page = _mock_page()
+        page.query_selector_all.return_value = cards
+
+        def hanging_get_description(pg, url):
+            time.sleep(5)
+            return ""
+
+        fetcher = GooglePlaywrightFetcher()
+        logged = []
+        timed_out = []
+        with patch.object(fetcher, "_get_description", side_effect=hanging_get_description):
+            fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page,
+                                   logged.append, set(), timed_out_urls=timed_out)
+
+        assert len(timed_out) == 1
+        assert any("SKIPPED" in m for m in logged)
+
+    def test_google_fetch_propagates_timed_out_urls_to_caller(self, monkeypatch):
+        """fetch() returns with timed_out_urls populated when a description hangs."""
+        monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 0.1)
+        cards = [self._make_google_card(0)]
+        page = _mock_page()
+        page.query_selector_all.return_value = cards
+
+        def hanging_get_description(pg, url):
+            time.sleep(5)
+            return ""
+
+        fetcher = GooglePlaywrightFetcher()
+        timed_out = []
+        with patch.object(fetcher, "_get_description", side_effect=hanging_get_description):
+            fetcher.fetch(PREFERENCES, page, log=lambda x: None, timed_out_urls=timed_out)
+
+        assert len(timed_out) == 1
+
+    def test_apple_fetch_propagates_timed_out_urls(self, monkeypatch):
+        """Apple fetch() threads timed_out_urls through to _get_description_safe."""
+        monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 0.1)
+
+        page = _mock_page()
+        single_kw_prefs = {**PREFERENCES, "title_keywords": ["Engineering Manager"]}
+
+        def hanging_get_description(pg, url):
+            time.sleep(5)
+            return ""
+
+        with patch("pipeline.playwright_fetcher.requests.post") as mock_post:
+            mock_post.return_value.raise_for_status = MagicMock()
+            mock_post.return_value.json.return_value = {
+                "res": {"searchResults": [{"id": "abc123", "postingTitle": "Engineering Manager, Siri",
+                                           "locations": [{"name": "New York, NY"}]}]}}
+            fetcher = ApplePlaywrightFetcher()
+            timed_out = []
+            with patch.object(fetcher, "_get_description", side_effect=hanging_get_description):
+                fetcher.fetch(single_kw_prefs, page, timed_out_urls=timed_out)
+
+        assert len(timed_out) == 1
+
+    def test_meta_extract_jobs_propagates_timed_out_urls(self, monkeypatch):
+        """Meta _extract_jobs threads timed_out_urls through to _get_description_safe."""
+        monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 0.1)
+
+        link = MagicMock()
+        link.get_attribute.return_value = "/profile/job_details/99999"
+        link.inner_text.return_value = "Engineering Manager\nNew York, NY"
+        page = _mock_page()
+        page.query_selector_all.return_value = [link]
+
+        def hanging_get_description(pg, url):
+            time.sleep(5)
+            return ""
+
+        fetcher = MetaPlaywrightFetcher()
+        timed_out = []
+        with patch.object(fetcher, "_get_description", side_effect=hanging_get_description):
+            fetcher._extract_jobs(page, PREFERENCES, timed_out_urls=timed_out)
+
+        assert len(timed_out) == 1
 
 
 # ── _PLAYWRIGHT_FETCHER_MAP ────────────────────────────────────────────────────

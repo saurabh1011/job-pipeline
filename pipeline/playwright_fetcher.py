@@ -15,6 +15,7 @@ same normalized job dict as HTTP-based fetchers:
 """
 import logging
 import re
+import threading
 from typing import List
 
 import requests
@@ -29,6 +30,45 @@ _UA = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
+_DESCRIPTION_TIMEOUT_S = 55
+_MAX_DESCRIPTIONS_PER_KEYWORD = 50
+
+
+def _get_description_safe(fetch_fn, page, url, log=None, timed_out_urls=None):
+    """Call fetch_fn(page, url) with a Python-level timeout.
+
+    Playwright's own timeout doesn't fire when the browser process dies (dead
+    TCP socket). This wrapper runs the fetch in a daemon thread; if it exceeds
+    _DESCRIPTION_TIMEOUT_S seconds the page is closed to unblock the stuck
+    goto(), and an empty string is returned so the pipeline can continue.
+
+    log: task-drawer callable — receives a SKIPPED message on timeout.
+    timed_out_urls: mutable list — the URL is appended on timeout so callers
+        can report skips in fetch_errors / email.
+    """
+    result = [""]
+    done = threading.Event()
+
+    def _do():
+        result[0] = fetch_fn(page, url)
+        done.set()
+
+    t = threading.Thread(target=_do, daemon=True)
+    t.start()
+    if done.wait(timeout=_DESCRIPTION_TIMEOUT_S):
+        return result[0]
+    try:
+        page.close()
+    except Exception:
+        pass
+    msg = f"  SKIPPED: description fetch timed out after {_DESCRIPTION_TIMEOUT_S}s — {url}"
+    if log:
+        log(msg)
+    logger.warning("Description fetch timed out after %ds, skipping: %s", _DESCRIPTION_TIMEOUT_S, url)
+    if timed_out_urls is not None:
+        timed_out_urls.append(url)
+    return ""
+
 
 class GooglePlaywrightFetcher:
     """Fetches EM roles from careers.google.com (React SPA)."""
@@ -38,14 +78,14 @@ class GooglePlaywrightFetcher:
     def __init__(self, company_name: str = "Google"):
         self.company_name = company_name
 
-    def fetch(self, preferences: dict, page: Page, log=None) -> List[dict]:
+    def fetch(self, preferences: dict, page: Page, log=None, timed_out_urls=None) -> List[dict]:
         _log = log or (lambda msg: logger.info(msg))
         results = []
         seen: set = set()
         keywords = preferences.get("title_keywords", ["Engineering Manager"])
         for i, kw in enumerate(keywords, 1):
             _log(f"Google: keyword {i}/{len(keywords)} — '{kw}'")
-            for job in self._fetch_keyword(kw, preferences, page, _log, seen):
+            for job in self._fetch_keyword(kw, preferences, page, _log, seen, timed_out_urls=timed_out_urls):
                 seen.add(job["job_id"])
                 results.append(job)
         _log(f"Google: {len(results)} total unique jobs found")
@@ -54,7 +94,7 @@ class GooglePlaywrightFetcher:
     _MAX_PAGES = 5
     _BASE = "https://www.google.com/about/careers/applications/"
 
-    def _fetch_keyword(self, keyword: str, preferences: dict, page: Page, log, seen: set) -> List[dict]:
+    def _fetch_keyword(self, keyword: str, preferences: dict, page: Page, log, seen: set, timed_out_urls=None) -> List[dict]:
         q = keyword.replace(' ', '+')
         candidates = []
 
@@ -105,13 +145,19 @@ class GooglePlaywrightFetcher:
             if len(cards) < 20 or len(page_candidates) == 0:
                 break
 
-        log(f"  Fetching descriptions for {len(candidates)} new jobs...")
+        to_fetch = candidates[:_MAX_DESCRIPTIONS_PER_KEYWORD]
+        if len(candidates) > _MAX_DESCRIPTIONS_PER_KEYWORD:
+            log(f"  Capping at {_MAX_DESCRIPTIONS_PER_KEYWORD} descriptions ({len(candidates)} new jobs found)")
+        log(f"  Fetching descriptions for {len(to_fetch)} new jobs...")
         results = []
-        for i, c in enumerate(candidates, 1):
+        for i, c in enumerate(to_fetch, 1):
             if i > 1:
-                page.wait_for_timeout(3000)
-            log(f"  Description {i}/{len(candidates)}: {c['title'][:50]}")
-            desc = self._get_description(page, c["url"])
+                try:
+                    page.wait_for_timeout(3000)
+                except Exception:
+                    pass
+            log(f"  Description {i}/{len(to_fetch)}: {c['title'][:50]}")
+            desc = _get_description_safe(self._get_description, page, c["url"], log=log, timed_out_urls=timed_out_urls)
             results.append({
                 "job_id": c["job_id"],
                 "company": self.company_name,
@@ -151,11 +197,11 @@ class ApplePlaywrightFetcher:
     def __init__(self, company_name: str = "Apple"):
         self.company_name = company_name
 
-    def fetch(self, preferences: dict, page: Page, log=None) -> List[dict]:
+    def fetch(self, preferences: dict, page: Page, log=None, timed_out_urls=None) -> List[dict]:
         results = []
         seen: set = set()
         for kw in preferences.get("title_keywords", ["Engineering Manager"]):
-            for job in self._fetch_keyword(kw, preferences, page):
+            for job in self._fetch_keyword(kw, preferences, page, timed_out_urls=timed_out_urls):
                 if job["job_id"] not in seen:
                     seen.add(job["job_id"])
                     results.append(job)
@@ -170,7 +216,7 @@ class ApplePlaywrightFetcher:
         "Origin": "https://jobs.apple.com",
     }
 
-    def _fetch_keyword(self, keyword: str, preferences: dict, page: Page) -> List[dict]:
+    def _fetch_keyword(self, keyword: str, preferences: dict, page: Page, timed_out_urls=None) -> List[dict]:
         candidates = []
         seen_ids: set = set()
 
@@ -224,7 +270,7 @@ class ApplePlaywrightFetcher:
 
         results = []
         for c in candidates:
-            desc = self._get_description(page, c["url"])
+            desc = _get_description_safe(self._get_description, page, c["url"], timed_out_urls=timed_out_urls)
             results.append({
                 "job_id": c["job_id"],
                 "company": self.company_name,
@@ -257,7 +303,7 @@ class MetaPlaywrightFetcher:
     def __init__(self, company_name: str = "Meta"):
         self.company_name = company_name
 
-    def fetch(self, preferences: dict, page: Page, log=None) -> List[dict]:
+    def fetch(self, preferences: dict, page: Page, log=None, timed_out_urls=None) -> List[dict]:
         try:
             page.goto(
                 f"{self._SEARCH}?q=Engineering+Manager&sort_by_new=true",
@@ -268,11 +314,11 @@ class MetaPlaywrightFetcher:
             logger.warning("Meta page load failed: %s", exc)
             return []
 
-        jobs = self._extract_jobs(page, preferences)
+        jobs = self._extract_jobs(page, preferences, timed_out_urls=timed_out_urls)
         logger.info("Meta: %d matching jobs found", len(jobs))
         return jobs
 
-    def _extract_jobs(self, page: Page, preferences: dict) -> List[dict]:
+    def _extract_jobs(self, page: Page, preferences: dict, timed_out_urls=None) -> List[dict]:
         candidates = []
         seen: set = set()
 
@@ -315,7 +361,7 @@ class MetaPlaywrightFetcher:
 
         results = []
         for c in candidates:
-            desc = self._get_description(page, c["url"])
+            desc = _get_description_safe(self._get_description, page, c["url"], timed_out_urls=timed_out_urls)
             results.append({
                 "job_id": c["job_id"],
                 "company": self.company_name,

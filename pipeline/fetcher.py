@@ -1140,6 +1140,8 @@ def fetch_all_companies(
         from playwright.sync_api import sync_playwright
         from pipeline.playwright_fetcher import _PLAYWRIGHT_FETCHER_MAP
 
+        _PLAYWRIGHT_DEFAULT_TIMEOUT = 1200  # 20 min hard limit per company
+
         with sync_playwright() as pw:
             for company in playwright_companies:
                 ats = company.get("ats")
@@ -1148,32 +1150,72 @@ def fetch_all_companies(
                     logger.warning("No Playwright fetcher for ATS '%s' (company: %s)",
                                    ats, company.get("name"))
                     continue
+                company_name = company["name"]
                 company_prefs = _build_company_prefs(company, preferences)
-                fetcher = fetcher_cls(company_name=company["name"])
+                fetcher = fetcher_cls(company_name=company_name)
+                company_timeout = company.get("fetch_timeout", _PLAYWRIGHT_DEFAULT_TIMEOUT)
+
                 # Launch a fresh browser per company so memory is freed between runs.
                 browser = pw.chromium.launch(headless=True)
+                page = None
+                t0 = time.time()
                 try:
                     page = browser.new_page(user_agent=(
                         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                     ))
-                    try:
-                        jobs = fetcher.fetch(company_prefs, page, log=log)
-                        all_jobs.extend(jobs)
-                    except Exception as exc:
-                        _log(f"  ERROR fetching {company['name']}: {exc}")
+                    timed_out_urls: List[str] = []
+                    result_holder: Dict[str, Any] = {"jobs": [], "exc": None}
+
+                    def _playwright_fetch(f=fetcher, p=company_prefs, pg=page,
+                                         tu=timed_out_urls, h=result_holder):
+                        try:
+                            h["jobs"] = f.fetch(p, pg, log=log, timed_out_urls=tu)
+                        except Exception as exc:
+                            h["exc"] = exc
+
+                    fetch_thread = threading.Thread(target=_playwright_fetch, daemon=True)
+                    fetch_thread.start()
+                    fetch_thread.join(timeout=company_timeout)
+                    elapsed = time.time() - t0
+
+                    if fetch_thread.is_alive():
+                        msg = f"TIMEOUT after {company_timeout}s"
+                        _log(f"  {msg} — skipping {company_name}")
                         if fetch_errors is not None:
-                            fetch_errors[company["name"]] = str(exc)
-                    finally:
-                        page.close()
+                            fetch_errors[company_name] = msg
+                        jobs = []
+                    elif result_holder["exc"]:
+                        _log(f"  ERROR fetching {company_name}: {result_holder['exc']}")
+                        if fetch_errors is not None:
+                            fetch_errors[company_name] = str(result_holder["exc"])
+                        jobs = []
+                    else:
+                        jobs = result_holder["jobs"]
+                        _log(f"  → {len(jobs)} matching jobs ({elapsed:.1f}s)")
+                        if timed_out_urls:
+                            n = len(timed_out_urls)
+                            skip_msg = f"{n} description fetch(es) timed out"
+                            _log(f"  WARNING: {company_name}: {skip_msg}")
+                            if fetch_errors is not None:
+                                fetch_errors[company_name] = skip_msg
+                    all_jobs.extend(jobs)
                 finally:
-                    browser.close()
+                    if page:
+                        try:
+                            page.close()
+                        except Exception:
+                            pass
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
                     try:
                         import resource as _resource
                         rss = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
                         import platform
                         rss_mb = rss / 1024 if platform.system() == "Darwin" else rss / 1024 / 1024
-                        _log(f"[mem] After {company['name']}: {rss_mb:.0f} MB RSS")
+                        _log(f"[mem] After {company_name}: {rss_mb:.0f} MB RSS")
                     except Exception:
                         pass
 
