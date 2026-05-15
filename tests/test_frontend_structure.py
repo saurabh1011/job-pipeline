@@ -117,6 +117,16 @@ class TestCssLayout:
         assert "display: none" in match.group(1), \
             ".settings-body must default to display:none; use .settings-body--active to show"
 
+    def test_runs_tab_not_max_width_constrained(self):
+        # Runs table must not be capped — it needs full width to show all columns without
+        # horizontal scroll. Check that settings-tab-runs is not in a max-width:640px rule.
+        assert not re.search(r'#settings-tab-runs[^}]*max-width\s*:\s*640px', CSS), \
+            "#settings-tab-runs must not have max-width:640px"
+        # The base .settings-body must not impose max-width either
+        base_match = re.search(r'\.settings-body\s*\{([^}]+)\}', CSS)
+        assert base_match and "max-width" not in base_match.group(1), \
+            ".settings-body base rule must not set max-width (apply it only to specific tabs)"
+
     def test_settings_body_active_shows(self):
         match = re.search(r'\.settings-body--active\s*\{([^}]+)\}', CSS)
         assert match, ".settings-body--active rule not found"
