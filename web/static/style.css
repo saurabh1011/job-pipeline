@@ -233,10 +233,21 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Auth overlay */
 #auth-overlay { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 999; }
-.auth-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px; width: 320px; text-align: center; }
-.auth-box h2 { font-size: 15px; margin-bottom: 16px; }
-.auth-box input { width: 100%; padding: 9px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 14px; margin-bottom: 12px; }
-.auth-box input:focus { outline: 1px solid var(--accent); }
+.auth-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 40px 32px; width: 320px; text-align: center; }
+.auth-box h2 { font-size: 18px; font-weight: 600; margin-bottom: 28px; }
+.btn-google { display: inline-flex; align-items: center; gap: 10px; background: #fff; color: #3c4043; border: 1px solid #dadce0; border-radius: 4px; padding: 10px 20px; font-size: 14px; font-weight: 500; text-decoration: none; cursor: pointer; transition: background 0.15s, box-shadow 0.15s; width: 100%; justify-content: center; }
+.btn-google:hover { background: #f8f9fa; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+.auth-error-msg { color: var(--red); font-size: 12px; margin-top: 14px; line-height: 1.5; }
+
+/* Profile switcher in header */
+.profile-group { display: flex; align-items: center; gap: 4px; }
+.profile-select { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 5px 8px; font-size: 13px; cursor: pointer; max-width: 160px; font-family: var(--font); }
+.profile-select:focus { outline: 1px solid var(--accent); }
+.profile-new-btn { padding: 4px 9px; font-size: 16px; line-height: 1; }
+
+/* User info in header */
+.user-info { display: flex; align-items: center; gap: 8px; }
+.user-name-label { font-size: 12px; color: var(--text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Run history table */
 .runs-scroll { overflow-x: auto; }
@@ -278,6 +289,16 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .apply-link:hover { text-decoration: underline; }
 
 .section-empty { color: var(--text-muted); font-size: 13px; font-style: italic; }
+
+/* Resume settings tab */
+.resume-info-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.resume-file-info { display: flex; flex-direction: column; gap: 2px; }
+.resume-filename { font-size: 13px; font-weight: 500; font-family: var(--mono); }
+.resume-size { font-size: 11px; color: var(--text-muted); }
+.resume-upload-area { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+
+/* Profile settings tab */
+.active-badge { color: var(--accent) !important; margin-left: 4px; }
 
 /* Logs tab — every flex item needs min-height: 0 so content scrolls instead of expanding */
 #settings-tab-logs { max-width: none; padding: 0; }

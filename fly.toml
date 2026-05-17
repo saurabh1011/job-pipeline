@@ -15,6 +15,10 @@ primary_region = 'ewr'
   LOG_DIR = '/data/logs'
   OUTPUT_DIR = '/data/output'
   PROFILE_DIR = '/data/profile'
+  AUTH_DB_PATH = '/data/auth.db'
+  GOOGLE_CLIENT_ID = '845655840878-6gktfs7n39hnktm76n517u1ro0164ua7.apps.googleusercontent.com'
+  OAUTH_REDIRECT_URI = 'https://job-pipeline.fly.dev/api/auth/google/callback'
+  ADMIN_EMAIL = 'saurabh.a.shah@gmail.com'
 
 [[mounts]]
   source = 'job_data'

@@ -367,14 +367,12 @@ class TestDateFields:
 
 class TestAuthEnforcement:
     def test_jobs_requires_auth_when_key_set(self, client, monkeypatch):
-        import web.auth as auth_mod
-        monkeypatch.setattr(auth_mod, "_API_KEY", "testkey")
+        monkeypatch.setenv("WEB_API_KEY", "testkey")
         r = client.get("/api/jobs")
         assert r.status_code == 401
 
     def test_jobs_accepts_correct_key(self, client, monkeypatch):
-        import web.auth as auth_mod
-        monkeypatch.setattr(auth_mod, "_API_KEY", "testkey")
+        monkeypatch.setenv("WEB_API_KEY", "testkey")
         r = client.get("/api/jobs", headers={"x-api-key": "testkey"})
         assert r.status_code == 200
 
@@ -398,62 +396,57 @@ def _mock_score_result(score=9, summary="Great match", meets=True):
 
 
 class TestScoreJobList:
-    def test_returns_tuple_of_three(self, db_path, monkeypatch):
+    def test_returns_tuple_of_three(self, db_path):
         from web.server import _score_job_list
-        monkeypatch.setattr(server_module, "DB_PATH", db_path)
         scorer = MagicMock()
         scorer.score.return_value = _mock_score_result()
         loader = MagicMock()
         with patch("pipeline.scorer.JobScorer", return_value=scorer):
-            result = _score_job_list(lambda m: None, [_fake_job()], {}, MagicMock(), 7, loader)
+            result = _score_job_list(lambda m: None, [_fake_job()], {}, MagicMock(), 7, loader, db_path)
         assert len(result) == 3
 
-    def test_scored_count_increments_on_success(self, db_path, monkeypatch):
+    def test_scored_count_increments_on_success(self, db_path):
         from web.server import _score_job_list
-        monkeypatch.setattr(server_module, "DB_PATH", db_path)
         scorer = MagicMock()
         scorer.score.return_value = _mock_score_result()
         loader = MagicMock()
         with patch("pipeline.scorer.JobScorer", return_value=scorer):
             scored, failed, _ = _score_job_list(
-                lambda m: None, [_fake_job(), _fake_job(job_id="j2")], {}, MagicMock(), 7, loader)
+                lambda m: None, [_fake_job(), _fake_job(job_id="j2")], {}, MagicMock(), 7, loader, db_path)
         assert scored == 2
         assert failed == 0
 
-    def test_failed_count_increments_on_exception(self, db_path, monkeypatch):
+    def test_failed_count_increments_on_exception(self, db_path):
         from web.server import _score_job_list
-        monkeypatch.setattr(server_module, "DB_PATH", db_path)
         scorer = MagicMock()
         scorer.score.side_effect = Exception("LLM error")
         loader = MagicMock()
         with patch("pipeline.scorer.JobScorer", return_value=scorer):
             scored, failed, scored_jobs = _score_job_list(
-                lambda m: None, [_fake_job()], {}, MagicMock(), 7, loader)
+                lambda m: None, [_fake_job()], {}, MagicMock(), 7, loader, db_path)
         assert scored == 0
         assert failed == 1
         assert scored_jobs == []
 
-    def test_scored_jobs_contain_match_score_and_summary(self, db_path, monkeypatch):
+    def test_scored_jobs_contain_match_score_and_summary(self, db_path):
         from web.server import _score_job_list
-        monkeypatch.setattr(server_module, "DB_PATH", db_path)
         scorer = MagicMock()
         scorer.score.return_value = _mock_score_result(score=8, summary="Strong alignment")
         loader = MagicMock()
         with patch("pipeline.scorer.JobScorer", return_value=scorer):
             _, _, scored_jobs = _score_job_list(
-                lambda m: None, [_fake_job()], {}, MagicMock(), 7, loader)
+                lambda m: None, [_fake_job()], {}, MagicMock(), 7, loader, db_path)
         assert scored_jobs[0]["match_score"] == 8
         assert scored_jobs[0]["match_summary"] == "Strong alignment"
 
-    def test_partial_failure_mixes_counted_correctly(self, db_path, monkeypatch):
+    def test_partial_failure_mixes_counted_correctly(self, db_path):
         from web.server import _score_job_list
-        monkeypatch.setattr(server_module, "DB_PATH", db_path)
         scorer = MagicMock()
         scorer.score.side_effect = [_mock_score_result(score=9), Exception("LLM timeout")]
         loader = MagicMock()
         with patch("pipeline.scorer.JobScorer", return_value=scorer):
             scored, failed, scored_jobs = _score_job_list(
-                lambda m: None, [_fake_job(), _fake_job(job_id="j2")], {}, MagicMock(), 7, loader)
+                lambda m: None, [_fake_job(), _fake_job(job_id="j2")], {}, MagicMock(), 7, loader, db_path)
         assert scored == 1
         assert failed == 1
         assert len(scored_jobs) == 1

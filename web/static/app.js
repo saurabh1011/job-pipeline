@@ -1,6 +1,6 @@
 // Job Pipeline SPA
 const App = (() => {
-  let _apiKey = localStorage.getItem("api_key") || "";
+  let _currentUser = null;
   let _currentStatuses = new Set(["alerted"]);
   let _currentCompanies = new Set();
   let _currentJob = null;
@@ -10,6 +10,9 @@ const App = (() => {
   let _selectedKeys = new Set();
   let _activeLocations = new Set(["new_york", "remote"]);
   let _dateFilter = "all";
+  let _profiles = [];
+  let _activeProfileId = null;
+  let _activeSettingsTab = "companies";
 
   const LOCATION_BUCKETS = [
     { key: "new_york", label: "New York", pattern: /new york|nyc|new york city/i },
@@ -35,11 +38,11 @@ const App = (() => {
   // ── Auth ────────────────────────────────────────────────────────────────
 
   function _headers() {
-    return { "Content-Type": "application/json", "x-api-key": _apiKey };
+    return { "Content-Type": "application/json" };
   }
 
   async function _api(method, path, body) {
-    const opts = { method, headers: _headers() };
+    const opts = { method, headers: _headers(), credentials: "same-origin" };
     if (body !== undefined) opts.body = JSON.stringify(body);
     const res = await fetch(path, opts);
     if (res.status === 401) {
@@ -54,23 +57,25 @@ const App = (() => {
   }
 
   function _showAuth() {
+    const params = new URLSearchParams(window.location.search);
+    const errType = params.get("auth_error");
+    if (errType) {
+      document.getElementById("auth-error").style.display = "block";
+    }
     document.getElementById("auth-overlay").style.display = "flex";
   }
 
-  async function submitApiKey() {
-    const input = document.getElementById("api-key-input");
-    const key = input.value.trim();
-    if (!key) return;
-    _apiKey = key;
-    try {
-      await _api("GET", "/api/jobs");
-      localStorage.setItem("api_key", key);
-      document.getElementById("auth-overlay").style.display = "none";
-      loadJobs();
-      _loadGroupSelect();
-    } catch {
-      document.getElementById("auth-error").style.display = "block";
-    }
+  function _updateUserUI() {
+    if (!_currentUser) return;
+    const nameEl = document.getElementById("user-name");
+    if (nameEl) nameEl.textContent = _currentUser.name || _currentUser.email;
+    const adminBtn = document.querySelector('.settings-tab[data-tab="admin"]');
+    if (adminBtn && _currentUser.is_admin) adminBtn.style.display = "";
+  }
+
+  async function logout() {
+    try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch {}
+    window.location.href = "/";
   }
 
   // ── Job list ─────────────────────────────────────────────────────────────
@@ -626,13 +631,71 @@ const App = (() => {
   }
 
   function settingsTab(tab) {
-    ["companies", "preferences", "runs", "logs"].forEach(t => {
-      document.getElementById(`settings-tab-${t}`).classList.toggle("settings-body--active", t === tab);
+    _activeSettingsTab = tab;
+    ["companies", "preferences", "runs", "logs", "admin", "resume", "schedule", "profile"].forEach(t => {
+      const el = document.getElementById(`settings-tab-${t}`);
+      if (el) el.classList.toggle("settings-body--active", t === tab);
       const btn = document.querySelector(`.settings-tab[data-tab="${t}"]`);
       if (btn) btn.classList.toggle("active", t === tab);
     });
-    if (tab === "runs") _loadRunsTab();
-    if (tab === "logs") _loadLogsTab();
+    if (tab === "runs")     _loadRunsTab();
+    if (tab === "logs")     _loadLogsTab();
+    if (tab === "admin")    _loadAdminTab();
+    if (tab === "resume")   _loadResumeTab();
+    if (tab === "schedule") _loadScheduleTab();
+    if (tab === "profile")  _loadProfileTab();
+  }
+
+  async function _loadAdminTab() {
+    const emailEl = document.getElementById("admin-email-list");
+    const userEl  = document.getElementById("admin-user-list");
+    emailEl.innerHTML = '<div class="settings-empty">Loading...</div>';
+    userEl.innerHTML  = '<div class="settings-empty">Loading...</div>';
+    try {
+      const [emails, users] = await Promise.all([
+        _api("GET", "/api/admin/allowed-emails"),
+        _api("GET", "/api/admin/users"),
+      ]);
+      emailEl.innerHTML = emails.length
+        ? emails.map(e => `
+            <div class="settings-company-row">
+              <div class="company-info"><span class="company-name-text">${_esc(e.email)}</span>
+                <span class="company-slug">added by ${_esc(e.added_by || "—")}</span></div>
+              <button class="btn-danger btn-sm" onclick="App.adminRemoveEmail('${_esc(e.email)}')">Remove</button>
+            </div>`).join("")
+        : '<div class="settings-empty">No emails in allowlist.</div>';
+      userEl.innerHTML = users.length
+        ? `<table class="runs-table"><thead><tr><th>Email</th><th>Name</th><th>Admin</th><th>Since</th></tr></thead><tbody>${
+            users.map(u => `<tr>
+              <td>${_esc(u.email)}</td>
+              <td>${_esc(u.name)}</td>
+              <td>${u.is_admin ? "✓" : ""}</td>
+              <td>${u.created_at.slice(0,10)}</td>
+            </tr>`).join("")
+          }</tbody></table>`
+        : '<div class="settings-empty">No users yet.</div>';
+    } catch (e) {
+      emailEl.innerHTML = '<div class="settings-empty">Failed to load.</div>';
+    }
+  }
+
+  async function adminAddEmail() {
+    const input = document.getElementById("new-allowed-email");
+    const email = input.value.trim();
+    if (!email) return;
+    try {
+      await _api("POST", "/api/admin/allowed-emails", { email });
+      input.value = "";
+      _loadAdminTab();
+    } catch (e) { alert(`Error: ${e.message}`); }
+  }
+
+  async function adminRemoveEmail(email) {
+    if (!confirm(`Remove ${email} from allowlist?`)) return;
+    try {
+      await _api("DELETE", `/api/admin/allowed-emails/${encodeURIComponent(email)}`);
+      _loadAdminTab();
+    } catch (e) { alert(`Error: ${e.message}`); }
   }
 
   async function _loadRunsTab() {
@@ -1049,16 +1112,243 @@ const App = (() => {
       .replace(/"/g, "&quot;");
   }
 
+  // ── Profile switcher ─────────────────────────────────────────────────────
+
+  function _getActiveProfileCookie() {
+    const m = document.cookie.match(/(?:^|;\s*)active_profile_id=([^;]+)/);
+    return m ? m[1] : null;
+  }
+
+  function _setProfileCookie(id) {
+    document.cookie = `active_profile_id=${encodeURIComponent(id)}; path=/; max-age=31536000`;
+  }
+
+  async function _loadProfiles() {
+    try {
+      _profiles = await _api("GET", "/api/profiles");
+    } catch { return; }
+    const cookieId = _getActiveProfileCookie();
+    const found = _profiles.find(p => p.profile_id === cookieId);
+    _activeProfileId = found ? found.profile_id : (_profiles[0] ? _profiles[0].profile_id : null);
+    _renderProfileSwitcher();
+  }
+
+  function _renderProfileSwitcher() {
+    const group = document.getElementById("profile-group");
+    const sel = document.getElementById("profile-select");
+    if (!group || !sel) return;
+    if (!_profiles.length) { group.style.display = "none"; return; }
+    sel.innerHTML = _profiles.map(p =>
+      `<option value="${_esc(p.profile_id)}" ${p.profile_id === _activeProfileId ? "selected" : ""}>${_esc(p.name)}</option>`
+    ).join("");
+    group.style.display = "flex";
+  }
+
+  async function switchProfile(id) {
+    if (id === _activeProfileId) return;
+    _activeProfileId = id;
+    _setProfileCookie(id);
+    await loadJobs();
+    const settingsView = document.getElementById("settings-view");
+    if (settingsView && settingsView.classList.contains("active")) {
+      settingsTab(_activeSettingsTab);
+    }
+  }
+
+  async function createProfile() {
+    const name = prompt("Profile name:");
+    if (!name || !name.trim()) return;
+    try {
+      const p = await _api("POST", "/api/profiles", { name: name.trim() });
+      await _loadProfiles();
+      await switchProfile(p.profile_id);
+    } catch (e) { alert(e.message); }
+  }
+
+  async function createProfileFromForm() {
+    const input = document.getElementById("new-profile-name");
+    const name = (input ? input.value : "").trim();
+    if (!name) return;
+    try {
+      const p = await _api("POST", "/api/profiles", { name });
+      if (input) input.value = "";
+      await _loadProfiles();
+      await switchProfile(p.profile_id);
+      _loadProfileTab();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function renameProfile(id, currentName) {
+    const name = prompt("New name:", currentName);
+    if (!name || !name.trim() || name.trim() === currentName) return;
+    try {
+      await _api("PATCH", `/api/profiles/${id}`, { name: name.trim() });
+      await _loadProfiles();
+      _loadProfileTab();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function deleteProfile(id, name) {
+    if (!confirm(`Delete profile "${name}"? This cannot be undone.`)) return;
+    try {
+      await _api("DELETE", `/api/profiles/${id}`);
+      if (_activeProfileId === id) _activeProfileId = null;
+      await _loadProfiles();
+      if (!_activeProfileId && _profiles.length) {
+        _activeProfileId = _profiles[0].profile_id;
+        _setProfileCookie(_activeProfileId);
+        loadJobs();
+      }
+      _loadProfileTab();
+    } catch (e) { alert(e.message); }
+  }
+
+  function _loadProfileTab() {
+    const section = document.getElementById("profile-list-section");
+    if (!section) return;
+    if (!_profiles.length) {
+      section.innerHTML = '<div class="settings-empty">No profiles found.</div>';
+      return;
+    }
+    section.innerHTML = _profiles.map(p => `
+      <div class="settings-company-row">
+        <div class="company-info">
+          <span class="company-name-text">${_esc(p.name)}</span>
+          ${p.is_legacy ? '<span class="company-slug">legacy</span>' : ''}
+          ${p.profile_id === _activeProfileId ? '<span class="company-slug active-badge">active</span>' : ''}
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn-ghost btn-sm" onclick="App.renameProfile('${_esc(p.profile_id)}','${_esc(p.name).replace(/'/g,"\\'")}')">Rename</button>
+          <button class="btn-danger btn-sm" onclick="App.deleteProfile('${_esc(p.profile_id)}','${_esc(p.name).replace(/'/g,"\\'")}')">Delete</button>
+        </div>
+      </div>`).join("");
+  }
+
+  // ── Resume settings ───────────────────────────────────────────────────────
+
+  async function _apiUpload(path, formData) {
+    const res = await fetch(path, { method: "POST", body: formData, credentials: "same-origin" });
+    if (res.status === 401) { _showAuth(); throw new Error("Unauthorized"); }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || res.statusText);
+    }
+    return res.json();
+  }
+
+  async function _loadResumeTab() {
+    const section = document.getElementById("resume-info-section");
+    if (!section) return;
+    section.innerHTML = '<div class="settings-empty">Loading...</div>';
+    try {
+      const res = await fetch("/api/resume", { credentials: "same-origin" });
+      if (res.status === 404) {
+        section.innerHTML = '<div class="settings-empty">No resume uploaded yet.</div>';
+        return;
+      }
+      if (!res.ok) throw new Error(res.statusText);
+      const info = await res.json();
+      const kb = (info.size_bytes / 1024).toFixed(1);
+      section.innerHTML = `
+        <div class="resume-info-row">
+          <div class="resume-file-info">
+            <span class="resume-filename">${_esc(info.filename)}</span>
+            <span class="resume-size">${kb} KB</span>
+          </div>
+          <button class="btn-danger btn-sm" onclick="App.deleteResume()">Delete</button>
+        </div>`;
+    } catch {
+      section.innerHTML = '<div class="settings-empty">Failed to load resume info.</div>';
+    }
+  }
+
+  async function uploadResume(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const statusEl = document.getElementById("resume-upload-status");
+    if (statusEl) { statusEl.textContent = "Uploading…"; statusEl.className = "save-status"; }
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      await _apiUpload("/api/resume", formData);
+      input.value = "";
+      if (statusEl) { statusEl.textContent = "Uploaded!"; statusEl.className = "save-status save-ok"; setTimeout(() => { statusEl.textContent = ""; }, 2500); }
+      _loadResumeTab();
+    } catch (e) {
+      if (statusEl) { statusEl.textContent = `Failed: ${e.message}`; statusEl.className = "save-status save-error"; }
+    }
+  }
+
+  async function deleteResume() {
+    if (!confirm("Delete the uploaded resume?")) return;
+    try {
+      await _api("DELETE", "/api/resume");
+      _loadResumeTab();
+    } catch (e) { alert(e.message); }
+  }
+
+  // ── Schedule settings ─────────────────────────────────────────────────────
+
+  async function _loadScheduleTab() {
+    if (!_activeProfileId) return;
+    const statusEl = document.getElementById("sched-status");
+    try {
+      const res = await fetch(`/api/profiles/${_activeProfileId}/schedule`, { credentials: "same-origin" });
+      if (res.status === 404) {
+        if (statusEl) { statusEl.textContent = "Scheduling is not available for this profile type."; statusEl.className = "save-status"; }
+        return;
+      }
+      if (!res.ok) throw new Error(res.statusText);
+      const s = await res.json();
+      document.getElementById("sched-enabled").checked = !!s.enabled;
+      document.getElementById("sched-time-1").value = s.time_1 || "";
+      document.getElementById("sched-time-2").value = s.time_2 || "";
+      const tzSel = document.getElementById("sched-timezone");
+      if (tzSel) tzSel.value = s.timezone || "UTC";
+      if (statusEl) statusEl.textContent = "";
+    } catch (e) { console.error("Failed to load schedule:", e); }
+  }
+
+  async function saveSchedule() {
+    if (!_activeProfileId) return;
+    const statusEl = document.getElementById("sched-status");
+    const enabled  = document.getElementById("sched-enabled").checked;
+    const time_1   = document.getElementById("sched-time-1").value || null;
+    const time_2   = document.getElementById("sched-time-2").value || null;
+    const timezone = document.getElementById("sched-timezone").value;
+    if (statusEl) { statusEl.textContent = "Saving…"; statusEl.className = "save-status"; }
+    try {
+      await _api("PUT", `/api/profiles/${_activeProfileId}/schedule`, { time_1, time_2, timezone, enabled });
+      if (statusEl) { statusEl.textContent = "Saved!"; statusEl.className = "save-status save-ok"; setTimeout(() => { statusEl.textContent = ""; }, 2500); }
+    } catch (e) {
+      if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.className = "save-status save-error"; }
+    }
+  }
+
+  async function clearSchedule() {
+    if (!_activeProfileId) return;
+    if (!confirm("Clear the schedule for this profile?")) return;
+    try {
+      await _api("DELETE", `/api/profiles/${_activeProfileId}/schedule`);
+      document.getElementById("sched-enabled").checked = false;
+      document.getElementById("sched-time-1").value = "";
+      document.getElementById("sched-time-2").value = "";
+      const statusEl = document.getElementById("sched-status");
+      if (statusEl) { statusEl.textContent = "Schedule cleared."; statusEl.className = "save-status"; setTimeout(() => { statusEl.textContent = ""; }, 2500); }
+    } catch (e) { alert(e.message); }
+  }
+
   // ── Init ──────────────────────────────────────────────────────────────────
 
   async function init() {
-    if (!_apiKey) { _showAuth(); return; }
     try {
-      await _api("GET", "/api/jobs");
+      _currentUser = await _api("GET", "/api/auth/me");
+      _updateUserUI();
     } catch {
       _showAuth();
       return;
     }
+    await _loadProfiles();
     loadJobs();
     _loadGroupSelect();
   }
@@ -1066,9 +1356,6 @@ const App = (() => {
   document.addEventListener("DOMContentLoaded", init);
 
   document.addEventListener("DOMContentLoaded", () => {
-    document.getElementById("api-key-input").addEventListener("keydown", e => {
-      if (e.key === "Enter") submitApiKey();
-    });
     document.addEventListener("click", () => {
       document.querySelectorAll(".filter-dd-panel").forEach(p => { p.style.display = "none"; });
     });
@@ -1083,11 +1370,15 @@ const App = (() => {
            openJob, closeDetail, showTab,
            setStatus, bulkStatusFromSelect, rescore, analyze, generateCoverLetter, exportCoverLetterPdf, saveCoverLetter,
            triggerRun,
-           closeDrawer, submitApiKey,
+           closeDrawer,
            toggleSelectMode, toggleCheck, clearSelection, bulkStatus,
            switchView, openSettings, closeSettings, settingsTab,
            removeCompany, detectAts, addCompany,
            removeChip, chipKeydown, savePreferences,
            _loadRunsTab,
-           loadLogFile, closeLogFile };
+           loadLogFile, closeLogFile,
+           logout, adminAddEmail, adminRemoveEmail,
+           switchProfile, createProfile, createProfileFromForm, renameProfile, deleteProfile,
+           uploadResume, deleteResume,
+           saveSchedule, clearSchedule };
 })();

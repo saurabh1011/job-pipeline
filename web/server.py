@@ -9,14 +9,19 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
+import secrets
+from urllib.parse import urlencode
+
+import httpx
 import yaml
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import Cookie, Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -25,15 +30,17 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
-from web.auth import require_api_key           # noqa: E402
-from web.tasks import create_task, get_task    # noqa: E402
-from pipeline.store import JobStore, JobStatus  # noqa: E402
+from web.auth import require_admin, require_api_key  # noqa: E402
+from web.tasks import create_task, get_task           # noqa: E402
+from pipeline.store import JobStore, JobStatus        # noqa: E402
 
 DB_PATH    = os.environ.get("DB_PATH",      str(ROOT / "jobs.db"))
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR",   str(ROOT / "output"))
 CONFIG_DIR = os.environ.get("CONFIG_DIR",   str(ROOT / "config"))
 PROFILE_DIR = os.environ.get("PROFILE_DIR", str(ROOT / "profile"))
 LOG_DIR    = os.environ.get("LOG_DIR",      str(ROOT / "logs"))
+AUTH_DB_PATH = os.environ.get("AUTH_DB_PATH", str(ROOT / "auth.db"))
+DATA_DIR   = os.environ.get("DATA_DIR",     str(ROOT / "data"))
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(PROFILE_DIR, exist_ok=True)
@@ -51,7 +58,68 @@ for _cfg_file in ["companies.yaml", "preferences.yaml"]:
         import shutil as _shutil
         _shutil.copy2(str(_src), str(_dst))
 
+GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+OAUTH_REDIRECT_URI   = os.environ.get(
+    "OAUTH_REDIRECT_URI", "http://localhost:8000/api/auth/google/callback"
+)
+
+_GOOGLE_AUTH_URL     = "https://accounts.google.com/o/oauth2/v2/auth"
+_GOOGLE_TOKEN_URL    = "https://oauth2.googleapis.com/token"
+_GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+
 app = FastAPI(title="Job Application Pipeline", version="1.0.0")
+
+# Initialise auth DB on startup
+import web.auth_db as _auth_db  # noqa: E402
+_auth_db.AUTH_DB_PATH = AUTH_DB_PATH
+_auth_db.init_db()
+
+# ── APScheduler setup ─────────────────────────────────────────────────────────
+_scheduler = None
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler as _BgScheduler
+    _scheduler = _BgScheduler(timezone="UTC")
+except ImportError:
+    logger.warning("APScheduler not installed — per-profile scheduling unavailable")
+
+
+def _scheduler_run_profile(profile_id: str):
+    """Called by APScheduler to trigger a pipeline run for one profile."""
+    profile = _auth_db.get_profile(profile_id)
+    if not profile:
+        return
+    if profile.get("is_legacy"):
+        paths = _legacy_paths()
+    else:
+        paths = _make_profile_paths(profile["user_id"], profile_id)
+    create_task(_do_run, None, None, "source_and_score", paths)
+
+
+def _reload_scheduler():
+    """Sync APScheduler jobs from the schedules DB table."""
+    if _scheduler is None:
+        return
+    _scheduler.remove_all_jobs()
+    for sched in _auth_db.list_all_schedules():
+        tz = sched.get("timezone") or "UTC"
+        for slot in ("time_1", "time_2"):
+            hhmm = sched.get(slot)
+            if not hhmm:
+                continue
+            try:
+                hour, minute = (int(x) for x in hhmm.split(":"))
+            except ValueError:
+                continue
+            from apscheduler.triggers.cron import CronTrigger
+            _scheduler.add_job(
+                _scheduler_run_profile,
+                CronTrigger(hour=hour, minute=minute, timezone=tz),
+                args=[sched["profile_id"]],
+                id=f"{sched['profile_id']}_{slot}",
+                replace_existing=True,
+            )
+
 
 # On startup, mark any runs left in "running" state as "error" — they were
 # orphaned by a previous machine shutdown mid-task.
@@ -63,11 +131,86 @@ _startup_store._conn.execute(
 _startup_store._conn.commit()
 _startup_store.close()
 
+if _scheduler is not None:
+    _reload_scheduler()
+    _scheduler.start()
+
+
+# ── Profile path resolution ───────────────────────────────────────────────────
+
+@dataclass
+class ProfilePaths:
+    db_path: str
+    config_dir: str
+    output_dir: str
+    resume_dir: str
+    log_dir: str
+    profile_id: str
+
+
+def _legacy_paths() -> ProfilePaths:
+    """Paths for dev/service users and legacy (is_legacy=True) profiles."""
+    return ProfilePaths(
+        db_path=DB_PATH,
+        config_dir=CONFIG_DIR,
+        output_dir=OUTPUT_DIR,
+        resume_dir=PROFILE_DIR,
+        log_dir=LOG_DIR,
+        profile_id="legacy",
+    )
+
+
+def _make_profile_paths(user_id: str, profile_id: str) -> ProfilePaths:
+    base = os.path.join(DATA_DIR, "users", user_id, "profiles", profile_id)
+    paths = ProfilePaths(
+        db_path=os.path.join(base, "jobs.db"),
+        config_dir=os.path.join(base, "config"),
+        output_dir=os.path.join(base, "output"),
+        resume_dir=os.path.join(base, "resume"),
+        log_dir=os.path.join(base, "logs"),
+        profile_id=profile_id,
+    )
+    for d in [paths.config_dir, paths.output_dir, paths.resume_dir, paths.log_dir]:
+        os.makedirs(d, exist_ok=True)
+    # Seed config files from image defaults if not yet present
+    for fname in ["companies.yaml", "preferences.yaml"]:
+        dst = os.path.join(paths.config_dir, fname)
+        src = os.path.join(CONFIG_DIR, fname)
+        if not os.path.exists(dst) and os.path.exists(src):
+            shutil.copy2(src, dst)
+    return paths
+
+
+def get_profile_paths(
+    user: dict = Depends(require_api_key),
+    active_profile_id: Optional[str] = Cookie(default=None),
+) -> ProfilePaths:
+    """Resolve data paths for the current user + active profile."""
+    if user["user_id"] in ("dev", "service"):
+        return _legacy_paths()
+
+    profiles = _auth_db.list_profiles(user["user_id"])
+    if not profiles:
+        # First login after Phase 2 deploy: create a legacy profile so existing
+        # data at the module-level paths continues to work.
+        p = _auth_db.create_profile(user["user_id"], "Engineering Manager", is_legacy=True)
+        profiles = [p]
+
+    # Pick the active profile (cookie hint), fallback to first
+    profile = next(
+        (p for p in profiles if p["profile_id"] == active_profile_id),
+        profiles[0],
+    )
+
+    if profile.get("is_legacy"):
+        return _legacy_paths()
+    return _make_profile_paths(user["user_id"], profile["profile_id"])
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _load_prefs() -> dict:
-    with open(os.path.join(CONFIG_DIR, "preferences.yaml")) as f:
+def _load_prefs(config_dir: str = None) -> dict:
+    with open(os.path.join(config_dir or CONFIG_DIR, "preferences.yaml")) as f:
         return yaml.safe_load(f) or {}
 
 
@@ -85,9 +228,9 @@ def _deserialize_job(job: dict) -> dict:
     return job
 
 
-def _job_materials(company: str, job_id: str) -> dict:
+def _job_materials(company: str, job_id: str, output_dir: str) -> dict:
     """Return cover letter text, diff text, and pdf path for a job."""
-    job_dir = os.path.join(OUTPUT_DIR, f"{company}_{job_id}")
+    job_dir = os.path.join(output_dir, f"{company}_{job_id}")
     materials = {"cover_letter": None, "resume_diff": None, "pdf_path": None}
 
     cl_path = os.path.join(job_dir, "cover_letter.md")
@@ -110,8 +253,12 @@ def _job_materials(company: str, job_id: str) -> dict:
 # ── Jobs ─────────────────────────────────────────────────────────────────────
 
 @app.get("/api/jobs")
-def list_jobs(status: Optional[str] = None, _=Depends(require_api_key)):
-    store = JobStore(DB_PATH)
+def list_jobs(
+    status: Optional[str] = None,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
+    store = JobStore(paths.db_path)
     try:
         jobs = store.get_jobs_by_status(status) if status else store.list_all_jobs()
         jobs = [_deserialize_job(j) for j in jobs]
@@ -122,13 +269,18 @@ def list_jobs(status: Optional[str] = None, _=Depends(require_api_key)):
 
 
 @app.get("/api/jobs/{company}/{job_id}")
-def get_job(company: str, job_id: str, _=Depends(require_api_key)):
-    store = JobStore(DB_PATH)
+def get_job(
+    company: str,
+    job_id: str,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
+    store = JobStore(paths.db_path)
     try:
         job = store.get_job(company, job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
-        return {**_deserialize_job(job), **_job_materials(company, job_id)}
+        return {**_deserialize_job(job), **_job_materials(company, job_id, paths.output_dir)}
     finally:
         store.close()
 
@@ -148,13 +300,19 @@ class BulkStatusUpdate(BaseModel):
 
 
 @app.patch("/api/jobs/{company}/{job_id}")
-def update_job_status(company: str, job_id: str, body: StatusUpdate, _=Depends(require_api_key)):
+def update_job_status(
+    company: str,
+    job_id: str,
+    body: StatusUpdate,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
     allowed = {JobStatus.APPROVED, JobStatus.SKIPPED, JobStatus.APPLIED,
                JobStatus.ALERTED, JobStatus.NEW, JobStatus.INTERVIEWING,
                JobStatus.REJECTED, JobStatus.OFFER, JobStatus.INTERESTING}
     if body.status not in allowed:
         raise HTTPException(status_code=400, detail=f"Invalid status: {body.status}")
-    store = JobStore(DB_PATH)
+    store = JobStore(paths.db_path)
     try:
         job = store.get_job(company, job_id)
         if not job:
@@ -166,13 +324,17 @@ def update_job_status(company: str, job_id: str, body: StatusUpdate, _=Depends(r
 
 
 @app.post("/api/jobs/bulk-status")
-def bulk_update_status(body: BulkStatusUpdate, _=Depends(require_api_key)):
+def bulk_update_status(
+    body: BulkStatusUpdate,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
     allowed = {JobStatus.APPROVED, JobStatus.SKIPPED, JobStatus.APPLIED,
                JobStatus.ALERTED, JobStatus.NEW, JobStatus.INTERVIEWING,
                JobStatus.REJECTED, JobStatus.OFFER, JobStatus.INTERESTING}
     if body.status not in allowed:
         raise HTTPException(status_code=400, detail=f"Invalid status: {body.status}")
-    store = JobStore(DB_PATH)
+    store = JobStore(paths.db_path)
     try:
         updated = 0
         for ref in body.jobs:
@@ -186,13 +348,13 @@ def bulk_update_status(body: BulkStatusUpdate, _=Depends(require_api_key)):
 
 # ── Per-job actions ───────────────────────────────────────────────────────────
 
-def _do_generate_cover_letter(log, company: str, job_id: str):
+def _do_generate_cover_letter(log, company: str, job_id: str, paths: ProfilePaths):
     from pipeline.profile import ProfileLoader
     from pipeline.generator import ContentGenerator
     from pipeline.llm import create_provider
 
-    prefs = _load_prefs()
-    store = JobStore(DB_PATH)
+    prefs = _load_prefs(paths.config_dir)
+    store = JobStore(paths.db_path)
     try:
         job = store.get_job(company, job_id)
         if not job:
@@ -203,27 +365,32 @@ def _do_generate_cover_letter(log, company: str, job_id: str):
     log(f"Loading profile...")
     provider = create_provider(prefs)
     loader = ProfileLoader(
-        profile_dir=PROFILE_DIR,
+        profile_dir=paths.resume_dir,
         google_docs_links=prefs.get("google_docs_links", []),
         provider=provider,
     )
     profile = loader.load(job=job)
 
     log(f"Generating cover letter for {company} — {job['title']}...")
-    gen = ContentGenerator(provider=provider, output_dir=OUTPUT_DIR)
+    gen = ContentGenerator(provider=provider, output_dir=paths.output_dir)
     result = gen.generate(job, profile)
     log(f"Done → {result.output_dir}/cover_letter.md")
     return {"output_dir": result.output_dir}
 
 
 @app.post("/api/jobs/{company}/{job_id}/generate-cover-letter")
-def generate_cover_letter(company: str, job_id: str, _=Depends(require_api_key)):
-    task_id = create_task(_do_generate_cover_letter, company, job_id)
+def generate_cover_letter(
+    company: str,
+    job_id: str,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
+    task_id = create_task(_do_generate_cover_letter, company, job_id, paths)
     return {"task_id": task_id}
 
 
-def _do_export_cover_letter_pdf(log, company: str, job_id: str):
-    job_dir = os.path.join(OUTPUT_DIR, f"{company}_{job_id}")
+def _do_export_cover_letter_pdf(log, company: str, job_id: str, paths: ProfilePaths):
+    job_dir = os.path.join(paths.output_dir, f"{company}_{job_id}")
     src = os.path.join(job_dir, "cover_letter.md")
     dst = os.path.join(job_dir, "cover_letter.pdf")
     if not os.path.exists(src):
@@ -242,8 +409,13 @@ def _do_export_cover_letter_pdf(log, company: str, job_id: str):
 
 
 @app.post("/api/jobs/{company}/{job_id}/export-cover-letter-pdf")
-def export_cover_letter_pdf(company: str, job_id: str, _=Depends(require_api_key)):
-    task_id = create_task(_do_export_cover_letter_pdf, company, job_id)
+def export_cover_letter_pdf(
+    company: str,
+    job_id: str,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
+    task_id = create_task(_do_export_cover_letter_pdf, company, job_id, paths)
     return {"task_id": task_id}
 
 
@@ -252,14 +424,20 @@ class CoverLetterUpdate(BaseModel):
 
 
 @app.put("/api/jobs/{company}/{job_id}/cover-letter")
-def update_cover_letter(company: str, job_id: str, body: CoverLetterUpdate, _=Depends(require_api_key)):
-    store = JobStore(DB_PATH)
+def update_cover_letter(
+    company: str,
+    job_id: str,
+    body: CoverLetterUpdate,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
+    store = JobStore(paths.db_path)
     try:
         if not store.get_job(company, job_id):
             raise HTTPException(status_code=404, detail="Job not found")
     finally:
         store.close()
-    job_dir = os.path.join(OUTPUT_DIR, f"{company}_{job_id}")
+    job_dir = os.path.join(paths.output_dir, f"{company}_{job_id}")
     os.makedirs(job_dir, exist_ok=True)
     path = os.path.join(job_dir, "cover_letter.md")
     tmp = path + ".tmp"
@@ -304,7 +482,8 @@ def _send_pipeline_email(all_scored: list, alert_jobs: list, stats: dict):
         logger.error("Failed to send pipeline email: %s", exc)
 
 
-def _score_job_list(log, jobs: list, prefs: dict, provider, threshold: int, loader) -> tuple:
+def _score_job_list(log, jobs: list, prefs: dict, provider, threshold: int, loader,
+                    db_path: str) -> tuple:
     """Score a list of jobs. Returns (scored_count, failed_count, scored_jobs_list)."""
     from pipeline.scorer import JobScorer
     scorer = JobScorer(provider=provider)
@@ -318,7 +497,7 @@ def _score_job_list(log, jobs: list, prefs: dict, provider, threshold: int, load
         try:
             profile = loader.load(job=job)
             result = scorer.score(job, profile, prefs)
-            store = JobStore(DB_PATH)
+            store = JobStore(db_path)
             store.set_match_score(company, job_id, result.adjusted_score, result.summary,
                                   strengths=result.strengths, gaps=result.gaps)
             if result.meets_threshold(threshold):
@@ -336,7 +515,8 @@ def _score_job_list(log, jobs: list, prefs: dict, provider, threshold: int, load
     return scored, failed, scored_jobs
 
 
-def _do_run(log, group: str = None, company_filter: list = None, action: str = "source_and_score"):
+def _do_run(log, group: str = None, company_filter: list = None,
+            action: str = "source_and_score", paths: ProfilePaths = None):
     """Unified pipeline action.
 
     action:
@@ -351,20 +531,23 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
     from pipeline.profile import ProfileLoader
     from pipeline.llm import create_provider
 
-    with open(os.path.join(CONFIG_DIR, "companies.yaml")) as f:
+    if paths is None:
+        paths = _legacy_paths()
+
+    with open(os.path.join(paths.config_dir, "companies.yaml")) as f:
         all_companies_cfg = yaml.safe_load(f).get("companies", [])
-    prefs = _load_prefs()
+    prefs = _load_prefs(paths.config_dir)
     companies = _resolve_companies(all_companies_cfg, group, company_filter)
     company_names = {c["name"] for c in companies}
     group_label = group or "all"
     threshold = prefs.get("match_threshold", 7)
     provider = create_provider(prefs)
-    loader = ProfileLoader(profile_dir=PROFILE_DIR,
+    loader = ProfileLoader(profile_dir=paths.resume_dir,
                            google_docs_links=prefs.get("google_docs_links", []),
                            provider=provider)
 
     # Record run start
-    _run_store = JobStore(DB_PATH)
+    _run_store = JobStore(paths.db_path)
     run_id = _run_store.start_run(action, group_label, len(companies))
     _run_store.close()
 
@@ -385,7 +568,7 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
                 log("Launching browser (Playwright) — this may take several minutes...")
             fetched_all = fetch_all_companies(companies, prefs, log=log,
                                               fetch_errors=fetch_errors)
-            store = JobStore(DB_PATH)
+            store = JobStore(paths.db_path)
             for job in fetched_all:
                 if store.upsert_job(job):
                     new_jobs.append(job)
@@ -400,7 +583,7 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
             jobs_to_score = new_jobs
             log(f"{len(jobs_to_score)} new job(s) to score.")
         else:
-            store = JobStore(DB_PATH)
+            store = JobStore(paths.db_path)
             all_db_jobs = store.list_all_jobs()
             store.close()
             if action == "score":
@@ -418,7 +601,7 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
             return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": 0}
 
         scored, failed_scoring, all_scored_jobs = _score_job_list(
-            log, jobs_to_score, prefs, provider, threshold, loader)
+            log, jobs_to_score, prefs, provider, threshold, loader, paths.db_path)
         log(f"\nDone. Fetched: {len(fetched_all)}  New: {len(new_jobs)}  Scored: {scored}")
         return {"fetched": len(fetched_all), "new": len(new_jobs), "scored": scored}
 
@@ -427,7 +610,7 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
         raise
 
     finally:
-        _fin_store = JobStore(DB_PATH)
+        _fin_store = JobStore(paths.db_path)
         _fin_store.finish_run(
             run_id,
             jobs_fetched=len(fetched_all),
@@ -458,15 +641,17 @@ def _do_run(log, group: str = None, company_filter: list = None, action: str = "
             logger.error("Failed to send pipeline summary email: %s", e)
 
 
-def _do_rescore_job(log, company: str, job_id: str):
+def _do_rescore_job(log, company: str, job_id: str, paths: ProfilePaths = None):
     """Rescore a single job and update its score/strengths/gaps in the DB."""
     from pipeline.scorer import JobScorer
     from pipeline.profile import ProfileLoader
     from pipeline.llm import create_provider
 
-    prefs = _load_prefs()
+    if paths is None:
+        paths = _legacy_paths()
+    prefs = _load_prefs(paths.config_dir)
     provider = create_provider(prefs)
-    store = JobStore(DB_PATH)
+    store = JobStore(paths.db_path)
     try:
         job = store.get_job(company, job_id)
     finally:
@@ -475,14 +660,14 @@ def _do_rescore_job(log, company: str, job_id: str):
         raise ValueError(f"Job not found: {company}/{job_id}")
 
     log(f"Rescoring: {job['company']} — {job['title']}")
-    loader = ProfileLoader(profile_dir=PROFILE_DIR,
+    loader = ProfileLoader(profile_dir=paths.resume_dir,
                            google_docs_links=prefs.get("google_docs_links", []),
                            provider=provider)
     scorer = JobScorer(provider=provider)
     profile = loader.load(job=job)
     result = scorer.score(job, profile, prefs)
 
-    store2 = JobStore(DB_PATH)
+    store2 = JobStore(paths.db_path)
     store2.set_match_score(company, job_id, result.adjusted_score, result.summary,
                            strengths=result.strengths, gaps=result.gaps)
     store2.close()
@@ -498,9 +683,12 @@ class RunRequest(BaseModel):
 
 
 @app.get("/api/companies")
-def list_companies(_=Depends(require_api_key)):
+def list_companies(
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
     """Return company list with name and playwright flag for the run dropdown."""
-    with open(os.path.join(CONFIG_DIR, "companies.yaml")) as f:
+    with open(os.path.join(paths.config_dir, "companies.yaml")) as f:
         data = yaml.safe_load(f)
     return [
         {"name": c["name"], "playwright": c.get("ats") in _PLAYWRIGHT_ATS}
@@ -510,13 +698,14 @@ def list_companies(_=Depends(require_api_key)):
 
 # ── Settings: companies ───────────────────────────────────────────────────────
 
-def _read_companies_cfg() -> list:
-    with open(os.path.join(CONFIG_DIR, "companies.yaml")) as f:
+def _read_companies_cfg(config_dir: str = None) -> list:
+    with open(os.path.join(config_dir or CONFIG_DIR, "companies.yaml")) as f:
         return yaml.safe_load(f).get("companies", [])
 
 
-def _write_companies_cfg(companies: list):
-    path = os.path.join(CONFIG_DIR, "companies.yaml")
+def _write_companies_cfg(companies: list, config_dir: str = None):
+    d = config_dir or CONFIG_DIR
+    path = os.path.join(d, "companies.yaml")
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         yaml.dump({"companies": companies}, f, default_flow_style=False,
@@ -544,14 +733,21 @@ def detect_company_ats(body: CompanyDetectRequest, _=Depends(require_api_key)):
 
 
 @app.get("/api/settings/companies")
-def settings_list_companies(_=Depends(require_api_key)):
+def settings_list_companies(
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
     """Return full company config list for the settings panel."""
-    return _read_companies_cfg()
+    return _read_companies_cfg(paths.config_dir)
 
 
 @app.post("/api/settings/companies")
-def settings_add_company(body: CompanyAddRequest, _=Depends(require_api_key)):
-    companies = _read_companies_cfg()
+def settings_add_company(
+    body: CompanyAddRequest,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
+    companies = _read_companies_cfg(paths.config_dir)
     if any(c["name"].lower() == body.name.lower() for c in companies):
         raise HTTPException(status_code=409, detail=f"'{body.name}' already exists")
     entry: dict = {"name": body.name, "ats": body.ats}
@@ -562,17 +758,21 @@ def settings_add_company(body: CompanyAddRequest, _=Depends(require_api_key)):
     if body.company_id:
         entry["company_id"] = body.company_id
     companies.append(entry)
-    _write_companies_cfg(companies)
+    _write_companies_cfg(companies, paths.config_dir)
     return {"ok": True, "company": entry}
 
 
 @app.delete("/api/settings/companies/{name}")
-def settings_remove_company(name: str, _=Depends(require_api_key)):
-    companies = _read_companies_cfg()
+def settings_remove_company(
+    name: str,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
+    companies = _read_companies_cfg(paths.config_dir)
     filtered = [c for c in companies if c["name"] != name]
     if len(filtered) == len(companies):
         raise HTTPException(status_code=404, detail=f"'{name}' not found")
-    _write_companies_cfg(filtered)
+    _write_companies_cfg(filtered, paths.config_dir)
     return {"ok": True}
 
 
@@ -586,8 +786,11 @@ _PREFS_UI_KEYS = frozenset({
 
 
 @app.get("/api/settings/preferences")
-def settings_get_preferences(_=Depends(require_api_key)):
-    prefs = _load_prefs()
+def settings_get_preferences(
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
+    prefs = _load_prefs(paths.config_dir)
     return {k: v for k, v in prefs.items() if k in _PREFS_UI_KEYS}
 
 
@@ -603,12 +806,15 @@ class PreferencesUpdate(BaseModel):
 
 
 @app.put("/api/settings/preferences")
-def settings_save_preferences(body: PreferencesUpdate, _=Depends(require_api_key)):
-    path = os.path.join(CONFIG_DIR, "preferences.yaml")
+def settings_save_preferences(
+    body: PreferencesUpdate,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
+    path = os.path.join(paths.config_dir, "preferences.yaml")
     with open(path) as f:
         current = yaml.safe_load(f) or {}
     updates = {k: v for k, v in body.dict().items() if v is not None}
-    # us_only can legitimately be False — include it even when False
     if body.us_only is not None:
         updates["us_only"] = body.us_only
     current.update(updates)
@@ -620,31 +826,41 @@ def settings_save_preferences(body: PreferencesUpdate, _=Depends(require_api_key
 
 
 @app.post("/api/pipeline/run")
-def pipeline_run(body: RunRequest = RunRequest(), _=Depends(require_api_key)):
+def pipeline_run(
+    body: RunRequest = RunRequest(),
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
     """Run a pipeline action for selected companies."""
-    task_id = create_task(_do_run, body.group, body.companies or None, body.action)
+    task_id = create_task(_do_run, body.group, body.companies or None, body.action, paths)
     return {"task_id": task_id}
 
 
 @app.get("/api/runs")
-def list_runs(limit: int = 20, _=Depends(require_api_key)):
+def list_runs(
+    limit: int = 20,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
     """Return recent pipeline run records, newest first."""
-    store = JobStore(DB_PATH)
+    store = JobStore(paths.db_path)
     try:
         return store.list_runs(limit)
     finally:
         store.close()
 
 
-def _do_analyze_job(log, company: str, job_id: str):
+def _do_analyze_job(log, company: str, job_id: str, paths: ProfilePaths = None):
     """Run two-call deep evaluation for a single job and persist results."""
     from pipeline.evaluator import JobEvaluator
     from pipeline.profile import ProfileLoader
     from pipeline.llm import create_provider
 
-    prefs = _load_prefs()
+    if paths is None:
+        paths = _legacy_paths()
+    prefs = _load_prefs(paths.config_dir)
     provider = create_provider(prefs)
-    store = JobStore(DB_PATH)
+    store = JobStore(paths.db_path)
     try:
         job = store.get_job(company, job_id)
     finally:
@@ -653,7 +869,7 @@ def _do_analyze_job(log, company: str, job_id: str):
         raise ValueError(f"Job not found: {company}/{job_id}")
 
     log(f"Deep evaluation: {job['company']} — {job['title']}")
-    loader = ProfileLoader(profile_dir=PROFILE_DIR,
+    loader = ProfileLoader(profile_dir=paths.resume_dir,
                            google_docs_links=prefs.get("google_docs_links", []),
                            provider=provider)
     profile = loader.load(job=job)
@@ -661,7 +877,7 @@ def _do_analyze_job(log, company: str, job_id: str):
     evaluator = JobEvaluator(provider=provider)
     result = evaluator.evaluate(job, profile, log=log)
 
-    store2 = JobStore(DB_PATH)
+    store2 = JobStore(paths.db_path)
     store2.set_analysis(company, job_id, result.requirements, result.resume_suggestions)
     store2.close()
     log(f"\nDone. {len(result.requirements)} requirements evaluated, "
@@ -673,28 +889,38 @@ def _do_analyze_job(log, company: str, job_id: str):
 
 
 @app.post("/api/jobs/{company}/{job_id}/analyze")
-def analyze_job(company: str, job_id: str, _=Depends(require_api_key)):
+def analyze_job(
+    company: str,
+    job_id: str,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
     """Run deep two-call analysis for a single job."""
-    store = JobStore(DB_PATH)
+    store = JobStore(paths.db_path)
     try:
         if not store.get_job(company, job_id):
             raise HTTPException(status_code=404, detail="Job not found")
     finally:
         store.close()
-    task_id = create_task(_do_analyze_job, company, job_id)
+    task_id = create_task(_do_analyze_job, company, job_id, paths)
     return {"task_id": task_id}
 
 
 @app.post("/api/jobs/{company}/{job_id}/rescore")
-def rescore_job(company: str, job_id: str, _=Depends(require_api_key)):
+def rescore_job(
+    company: str,
+    job_id: str,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
     """Rescore a single job (useful after model or resume changes)."""
-    store = JobStore(DB_PATH)
+    store = JobStore(paths.db_path)
     try:
         if not store.get_job(company, job_id):
             raise HTTPException(status_code=404, detail="Job not found")
     finally:
         store.close()
-    task_id = create_task(_do_rescore_job, company, job_id)
+    task_id = create_task(_do_rescore_job, company, job_id, paths)
     return {"task_id": task_id}
 
 
@@ -717,15 +943,17 @@ def task_status(task_id: str, _=Depends(require_api_key)):
 # ── Log file endpoints ───────────────────────────────────────────────────────
 
 @app.get("/api/logs")
-def list_logs(_=Depends(require_api_key)):
+def list_logs(
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
     """Return metadata for the last 20 run log files, newest first."""
     import glob as _glob
-    pattern = os.path.join(LOG_DIR, "run_*.log")
+    pattern = os.path.join(paths.log_dir, "run_*.log")
     files = []
     for path in _glob.glob(pattern):
         fname = os.path.basename(path)
         try:
-            # filename: run_<task_id>_<YYYY-MM-DD>.log
             parts = fname[len("run_"):-len(".log")].rsplit("_", 1)
             task_id = parts[0]
             date_str = parts[1]
@@ -739,12 +967,15 @@ def list_logs(_=Depends(require_api_key)):
 
 
 @app.get("/api/logs/{filename}")
-def get_log(filename: str, _=Depends(require_api_key)):
+def get_log(
+    filename: str,
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
     """Return the content of a single log file."""
-    # Reject any path traversal attempts
     if "/" in filename or "\\" in filename or not filename.startswith("run_"):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    path = os.path.join(LOG_DIR, filename)
+    path = os.path.join(paths.log_dir, filename)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Log file not found")
     try:
@@ -752,6 +983,325 @@ def get_log(filename: str, _=Depends(require_api_key)):
             return {"filename": filename, "content": f.read()}
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Auth endpoints ───────────────────────────────────────────────────────────
+
+@app.get("/api/auth/me")
+def auth_me(user: dict = Depends(require_api_key)):
+    return user
+
+
+@app.get("/api/auth/google")
+async def auth_google():
+    state = secrets.token_urlsafe(32)
+    _auth_db.save_oauth_state(state)
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": OAUTH_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+    }
+    return RedirectResponse(url=_GOOGLE_AUTH_URL + "?" + urlencode(params), status_code=302)
+
+
+@app.get("/api/auth/google/callback")
+async def auth_callback(
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+):
+    if error or not code or not state:
+        return RedirectResponse(url="/?auth_error=oauth_failed", status_code=302)
+
+    if not _auth_db.consume_oauth_state(state):
+        return RedirectResponse(url="/?auth_error=invalid_state", status_code=302)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            token_resp = await client.post(_GOOGLE_TOKEN_URL, data={
+                "code": code,
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "redirect_uri": OAUTH_REDIRECT_URI,
+                "grant_type": "authorization_code",
+            })
+            token_data = token_resp.json()
+
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise ValueError("No access_token in response")
+
+        async with httpx.AsyncClient() as client:
+            userinfo_resp = await client.get(
+                _GOOGLE_USERINFO_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            user_info = userinfo_resp.json()
+    except Exception as e:
+        logger.error("OAuth token exchange error: %s", e)
+        return RedirectResponse(url="/?auth_error=oauth_failed", status_code=302)
+
+    google_id = user_info.get("sub")
+    email = user_info.get("email", "")
+    name = user_info.get("name", email)
+
+    if not google_id or not email:
+        return RedirectResponse(url="/?auth_error=oauth_failed", status_code=302)
+
+    existing = _auth_db.find_user_by_google_id(google_id)
+    if existing:
+        user = existing
+    else:
+        first = _auth_db.user_count() == 0
+        admin_email = os.environ.get("ADMIN_EMAIL", "")
+        is_admin = first or (bool(admin_email) and email.lower() == admin_email.lower())
+
+        if not is_admin and not _auth_db.is_email_allowed(email):
+            return RedirectResponse(url="/?auth_error=not_allowed", status_code=302)
+
+        if first:
+            _auth_db.add_allowed_email(email, added_by="bootstrap")
+
+        user = _auth_db.create_user(google_id, email, name, is_admin=is_admin)
+
+    session_token = _auth_db.create_session(user["user_id"])
+    prod = not OAUTH_REDIRECT_URI.startswith("http://localhost")
+    response = RedirectResponse(url="/", status_code=302)
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        secure=prod,
+        samesite="lax",
+        max_age=30 * 24 * 3600,
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(
+    session_token: Optional[str] = Cookie(default=None),
+    user: dict = Depends(require_api_key),
+):
+    if session_token:
+        _auth_db.revoke_session(session_token)
+    response = RedirectResponse(url="/", status_code=302)
+    response.delete_cookie("session_token")
+    return response
+
+
+# ── Admin endpoints ───────────────────────────────────────────────────────────
+
+class AllowedEmailRequest(BaseModel):
+    email: str
+
+
+class SetAdminRequest(BaseModel):
+    is_admin: bool
+
+
+@app.get("/api/admin/users")
+def admin_list_users(user: dict = Depends(require_admin)):
+    return _auth_db.list_users()
+
+
+@app.get("/api/admin/allowed-emails")
+def admin_list_emails(user: dict = Depends(require_admin)):
+    return _auth_db.list_allowed_emails()
+
+
+@app.post("/api/admin/allowed-emails")
+def admin_add_email(body: AllowedEmailRequest, user: dict = Depends(require_admin)):
+    _auth_db.add_allowed_email(body.email, added_by=user["email"])
+    return {"ok": True}
+
+
+@app.delete("/api/admin/allowed-emails/{email}")
+def admin_remove_email(email: str, user: dict = Depends(require_admin)):
+    _auth_db.remove_allowed_email(email)
+    return {"ok": True}
+
+
+@app.patch("/api/admin/users/{user_id}")
+def admin_update_user(
+    user_id: str, body: SetAdminRequest, user: dict = Depends(require_admin)
+):
+    if user_id == user["user_id"] and not body.is_admin:
+        raise HTTPException(status_code=400, detail="Cannot remove your own admin status")
+    _auth_db.set_admin(user_id, body.is_admin)
+    return {"ok": True}
+
+
+# ── Resume upload ─────────────────────────────────────────────────────────────
+
+_ALLOWED_RESUME_EXTS = {".pdf", ".docx", ".txt"}
+
+
+try:
+    @app.post("/api/resume")
+    async def upload_resume(
+        file: UploadFile = File(...),
+        _=Depends(require_api_key),
+        paths: ProfilePaths = Depends(get_profile_paths),
+    ):
+        """Accept a resume file (PDF/DOCX/TXT) and store it in the profile's resume dir."""
+        suffix = Path(file.filename).suffix.lower() if file.filename else ""
+        if suffix not in _ALLOWED_RESUME_EXTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type '{suffix}'. Allowed: {', '.join(_ALLOWED_RESUME_EXTS)}"
+            )
+        os.makedirs(paths.resume_dir, exist_ok=True)
+        dest = os.path.join(paths.resume_dir, f"resume{suffix}")
+        tmp = dest + ".tmp"
+        content = await file.read()
+        with open(tmp, "wb") as f_out:
+            f_out.write(content)
+        shutil.move(tmp, dest)
+        return {"ok": True, "filename": f"resume{suffix}", "size_bytes": len(content)}
+except RuntimeError:
+    # python-multipart not installed; upload endpoint unavailable
+    logger.warning("python-multipart not installed — /api/resume POST unavailable")
+
+
+@app.get("/api/resume")
+def get_resume_info(
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
+    """Return info about the uploaded resume, if any."""
+    for ext in _ALLOWED_RESUME_EXTS:
+        p = os.path.join(paths.resume_dir, f"resume{ext}")
+        if os.path.exists(p):
+            return {"filename": f"resume{ext}", "size_bytes": os.path.getsize(p), "extension": ext}
+    return {"filename": None}
+
+
+@app.delete("/api/resume")
+def delete_resume(
+    _=Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
+    """Delete the current resume file."""
+    deleted = False
+    for ext in _ALLOWED_RESUME_EXTS:
+        p = os.path.join(paths.resume_dir, f"resume{ext}")
+        if os.path.exists(p):
+            os.remove(p)
+            deleted = True
+    if not deleted:
+        raise HTTPException(status_code=404, detail="No resume found")
+    return {"ok": True}
+
+
+# ── Profile endpoints ─────────────────────────────────────────────────────────
+
+class ProfileCreateRequest(BaseModel):
+    name: str
+
+
+class ProfileRenameRequest(BaseModel):
+    name: str
+
+
+@app.get("/api/profiles")
+def list_profiles(user: dict = Depends(require_api_key)):
+    """List all profiles for the current user."""
+    if user["user_id"] in ("dev", "service"):
+        return [{"profile_id": "legacy", "name": "Default", "is_legacy": True}]
+    return _auth_db.list_profiles(user["user_id"])
+
+
+@app.post("/api/profiles")
+def create_profile(body: ProfileCreateRequest, user: dict = Depends(require_api_key)):
+    """Create a new profile for the current user."""
+    if user["user_id"] in ("dev", "service"):
+        raise HTTPException(status_code=400, detail="Cannot create profiles in dev/service mode")
+    profile = _auth_db.create_profile(user["user_id"], body.name, is_legacy=False)
+    # Pre-initialise the profile directories and seed config files
+    _make_profile_paths(user["user_id"], profile["profile_id"])
+    return profile
+
+
+@app.patch("/api/profiles/{profile_id}")
+def rename_profile(
+    profile_id: str,
+    body: ProfileRenameRequest,
+    user: dict = Depends(require_api_key),
+):
+    profile = _auth_db.get_profile(profile_id)
+    if not profile or profile["user_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    _auth_db.rename_profile(profile_id, body.name)
+    return {"ok": True}
+
+
+@app.delete("/api/profiles/{profile_id}")
+def delete_profile(profile_id: str, user: dict = Depends(require_api_key)):
+    profile = _auth_db.get_profile(profile_id)
+    if not profile or profile["user_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    remaining = _auth_db.list_profiles(user["user_id"])
+    if len(remaining) <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete the only profile")
+    _auth_db.delete_profile(profile_id)
+    _auth_db.delete_schedule(profile_id)
+    return {"ok": True}
+
+
+# ── Schedule endpoints ────────────────────────────────────────────────────────
+
+class ScheduleUpdate(BaseModel):
+    time_1: Optional[str] = None         # "HH:MM" in the given timezone
+    time_2: Optional[str] = None
+    timezone: str = "UTC"
+    enabled: bool = True
+    action: str = "source_and_score"
+
+
+def _own_profile_or_404(profile_id: str, user: dict):
+    profile = _auth_db.get_profile(profile_id)
+    if not profile or profile["user_id"] != user["user_id"]:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return profile
+
+
+@app.get("/api/profiles/{profile_id}/schedule")
+def get_schedule(profile_id: str, user: dict = Depends(require_api_key)):
+    _own_profile_or_404(profile_id, user)
+    sched = _auth_db.get_schedule(profile_id)
+    return sched or {"profile_id": profile_id, "time_1": None, "time_2": None,
+                     "timezone": "UTC", "enabled": False, "action": "source_and_score"}
+
+
+@app.put("/api/profiles/{profile_id}/schedule")
+def set_schedule(
+    profile_id: str,
+    body: ScheduleUpdate,
+    user: dict = Depends(require_api_key),
+):
+    _own_profile_or_404(profile_id, user)
+    sched = _auth_db.set_schedule(
+        profile_id=profile_id,
+        user_id=user["user_id"],
+        time_1=body.time_1,
+        time_2=body.time_2,
+        timezone=body.timezone,
+        enabled=body.enabled,
+        action=body.action,
+    )
+    _reload_scheduler()
+    return sched
+
+
+@app.delete("/api/profiles/{profile_id}/schedule")
+def delete_schedule(profile_id: str, user: dict = Depends(require_api_key)):
+    _own_profile_or_404(profile_id, user)
+    _auth_db.delete_schedule(profile_id)
+    _reload_scheduler()
+    return {"ok": True}
 
 
 # ── Static files & SPA ───────────────────────────────────────────────────────
