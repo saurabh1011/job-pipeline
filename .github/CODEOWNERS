@@ -1,0 +1,9 @@
+# CODEOWNERS — files that require explicit owner review before any PR can merge.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# The daily pipeline e2e test is a critical regression guard.
+# Any change (edit, delete, rename) requires owner approval.
+/tests/test_pipeline_e2e.py @saurabh1011
+
+# The GitHub Actions schedule workflow itself also requires review.
+/.github/workflows/daily_pipeline.yml @saurabh1011
