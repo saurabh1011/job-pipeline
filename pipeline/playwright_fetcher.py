@@ -198,25 +198,21 @@ class ApplePlaywrightFetcher:
         self.company_name = company_name
 
     def fetch(self, preferences: dict, page: Page, log=None, timed_out_urls=None) -> List[dict]:
+        _log = log or (lambda m: logger.info(m))
         results = []
         seen: set = set()
         for kw in preferences.get("title_keywords", ["Engineering Manager"]):
-            for job in self._fetch_keyword(kw, preferences, page, timed_out_urls=timed_out_urls):
+            for job in self._fetch_keyword(kw, preferences, page, log=_log, timed_out_urls=timed_out_urls):
                 if job["job_id"] not in seen:
                     seen.add(job["job_id"])
                     results.append(job)
+        _log(f"  Apple: {len(results)} matching jobs found")
         logger.info("Apple: %d matching jobs found", len(results))
         return results
 
     _API_URL = "https://jobs.apple.com/api/v1/search"
-    _API_HEADERS = {
-        "User-Agent": _UA,
-        "Content-Type": "application/json",
-        "Referer": "https://jobs.apple.com/en-us/search",
-        "Origin": "https://jobs.apple.com",
-    }
 
-    def _fetch_keyword(self, keyword: str, preferences: dict, page: Page, timed_out_urls=None) -> List[dict]:
+    def _fetch_keyword(self, keyword: str, preferences: dict, page: Page, log=None, timed_out_urls=None) -> List[dict]:
         candidates = []
         seen_ids: set = set()
 
@@ -226,24 +222,35 @@ class ApplePlaywrightFetcher:
                     self._API_URL,
                     json={
                         "query": "",
-                        "filters": {
-                            "keywords": [keyword],
-                            "locations": ["postLocation-USA"],
-                        },
+                        "filters": {"keywords": [keyword], "locations": ["postLocation-USA"]},
                         "page": page_num,
                         "locale": "en-us",
                         "sort": "",
-                        "format": {"longDate": "MMMM D, YYYY", "mediumDate": "MMM D, YYYY"},
                     },
-                    headers=self._API_HEADERS,
-                    timeout=15,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Referer": "https://jobs.apple.com/en-us/search",
+                        "Origin": "https://jobs.apple.com",
+                        "User-Agent": _UA,
+                    },
+                    timeout=30,
                 )
-                resp.raise_for_status()
+                if not resp.ok:
+                    logger.warning("Apple API status %d for '%s' page %d — possible IP block",
+                                   resp.status_code, keyword, page_num)
+                    if log:
+                        log(f"  Apple: API status={resp.status_code} for '{keyword}' page {page_num}")
+                    break
+                data = resp.json()
             except Exception as exc:
                 logger.warning("Apple API search failed for '%s' page %d: %s", keyword, page_num, exc)
+                if log:
+                    log(f"  Apple: API exception for '{keyword}' page {page_num}: {exc}")
                 break
 
-            search_results = resp.json().get("res", {}).get("searchResults", [])
+            search_results = data.get("res", {}).get("searchResults", [])
+            if log:
+                log(f"  Apple: '{keyword}' page {page_num}: {len(search_results)} results")
             if not search_results:
                 break
 
@@ -270,7 +277,7 @@ class ApplePlaywrightFetcher:
 
         results = []
         for c in candidates:
-            desc = _get_description_safe(self._get_description, page, c["url"], timed_out_urls=timed_out_urls)
+            desc = _get_description_safe(self._get_description, page, c["url"], log=log, timed_out_urls=timed_out_urls)
             results.append({
                 "job_id": c["job_id"],
                 "company": self.company_name,
@@ -284,7 +291,7 @@ class ApplePlaywrightFetcher:
 
     def _get_description(self, page: Page, url: str) -> str:
         try:
-            page.goto(url, timeout=20000)
+            page.goto(url, timeout=30000)
             page.wait_for_timeout(2000)
             el = (page.query_selector(".job-description")
                   or page.query_selector("[class*='description']")

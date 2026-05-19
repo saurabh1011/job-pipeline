@@ -42,6 +42,7 @@ def _mock_page(goto=None, evaluate=None, query_selector=None, query_selector_all
     page = MagicMock()
     page.goto.return_value = None
     page.wait_for_timeout.return_value = None
+    page.request = MagicMock()
     if evaluate is not None:
         page.evaluate.return_value = evaluate
     if query_selector is not None:
@@ -156,17 +157,20 @@ def _apple_api_response(jobs):
     }
 
 
-class TestApplePlaywrightFetcher:
-    def _mock_api(self, jobs, empty_page=2):
-        """Return a requests.post side_effect that returns jobs on page 1, empty on page 2+."""
-        def side_effect(url, json=None, **kwargs):
-            page_num = (json or {}).get("page", 1)
-            mock = MagicMock()
-            mock.raise_for_status = MagicMock()
-            mock.json.return_value = _apple_api_response(jobs) if page_num == 1 else {"res": {"searchResults": []}}
-            return mock
-        return side_effect
+def _mock_apple_post(jobs):
+    """Return a side_effect for requests.post: jobs on first call, empty on subsequent."""
+    calls = [0]
+    def side_effect(*args, **kwargs):
+        calls[0] += 1
+        m = MagicMock()
+        m.ok = True
+        m.status_code = 200
+        m.json.return_value = _apple_api_response(jobs) if calls[0] == 1 else {"res": {"searchResults": []}}
+        return m
+    return side_effect
 
+
+class TestApplePlaywrightFetcher:
     def test_filters_by_title(self):
         api_jobs = [
             {"id": "100", "title": "Engineering Manager, Siri", "location": "New York, NY"},
@@ -174,7 +178,7 @@ class TestApplePlaywrightFetcher:
         ]
         page = _mock_page()
         fetcher = ApplePlaywrightFetcher()
-        with patch("pipeline.playwright_fetcher.requests.post", side_effect=self._mock_api(api_jobs)):
+        with patch("pipeline.playwright_fetcher.requests.post", side_effect=_mock_apple_post(api_jobs)):
             with patch.object(fetcher, "_get_description", return_value=""):
                 jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
         assert len(jobs) == 1
@@ -184,7 +188,7 @@ class TestApplePlaywrightFetcher:
         api_jobs = [{"id": "ABC123", "title": "Engineering Manager, Maps", "location": "Seattle, WA"}]
         page = _mock_page()
         fetcher = ApplePlaywrightFetcher()
-        with patch("pipeline.playwright_fetcher.requests.post", side_effect=self._mock_api(api_jobs)):
+        with patch("pipeline.playwright_fetcher.requests.post", side_effect=_mock_apple_post(api_jobs)):
             with patch.object(fetcher, "_get_description", return_value=""):
                 jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
         assert jobs[0]["job_id"] == "ABC123"
@@ -200,7 +204,7 @@ class TestApplePlaywrightFetcher:
         api_jobs = [{"id": "XYZ", "title": "Engineering Manager, AI", "location": "Remote"}]
         page = _mock_page()
         fetcher = ApplePlaywrightFetcher()
-        with patch("pipeline.playwright_fetcher.requests.post", side_effect=self._mock_api(api_jobs)):
+        with patch("pipeline.playwright_fetcher.requests.post", side_effect=_mock_apple_post(api_jobs)):
             with patch.object(fetcher, "_get_description", return_value="jd"):
                 jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
         job = jobs[0]
@@ -510,13 +514,10 @@ class TestDescriptionTimeoutIntegration:
             time.sleep(5)
             return ""
 
-        with patch("pipeline.playwright_fetcher.requests.post") as mock_post:
-            mock_post.return_value.raise_for_status = MagicMock()
-            mock_post.return_value.json.return_value = {
-                "res": {"searchResults": [{"id": "abc123", "postingTitle": "Engineering Manager, Siri",
-                                           "locations": [{"name": "New York, NY"}]}]}}
-            fetcher = ApplePlaywrightFetcher()
-            timed_out = []
+        api_jobs = [{"id": "abc123", "title": "Engineering Manager, Siri", "location": "New York, NY"}]
+        fetcher = ApplePlaywrightFetcher()
+        timed_out = []
+        with patch("pipeline.playwright_fetcher.requests.post", side_effect=_mock_apple_post(api_jobs)):
             with patch.object(fetcher, "_get_description", side_effect=hanging_get_description):
                 fetcher.fetch(single_kw_prefs, page, timed_out_urls=timed_out)
 
