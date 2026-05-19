@@ -6,6 +6,11 @@ jobs.db
 jobs.db-shm
 jobs.db-wal
 
+# Auth database (generated at runtime)
+auth.db
+auth.db-shm
+auth.db-wal
+
 # Pipeline state
 pipeline_checkpoint.json
 
