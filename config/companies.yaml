@@ -139,12 +139,12 @@ companies:
 
   - name: Amazon
     ats: amazon
-    fetch_timeout: 90
+    fetch_timeout: 300
+    # Amazon L7 EM titles — "Sr." prefix (with and without period) covers both formats
     title_keywords:
+      - "Sr. Software Development Manager"
+      - "Sr Software Development Manager"
       - "Senior Engineering Manager"
-      - "Director of Engineering"
-      - "Engineering Director"
-      - "Senior Software Development Manager"
 
   # ── LinkedIn (jobs at LinkedIn Inc. only) ───────────────────────────────────
   - name: LinkedIn

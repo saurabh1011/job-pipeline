@@ -556,25 +556,19 @@ class AmazonFetcher:
     def __init__(self, company_name: str = "Amazon"):
         self.company_name = company_name
 
+    _MAX_RETRIES = 4
+    _RETRY_BASE_DELAY = 2  # seconds; doubles each attempt
+
     def fetch(self, preferences: dict) -> List[dict]:
         seen_ids: set = set()
         results = []
+        import random as _random
         for keyword in preferences.get("title_keywords", ["Engineering Manager"]):
             offset = 0
             while True:
-                try:
-                    resp = requests.get(
-                        self._SEARCH_URL,
-                        params={"query": keyword, "country_code": "USA",
-                                "result_limit": self._PAGE_SIZE, "offset": offset},
-                        headers={"User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)"},
-                        timeout=15,
-                    )
-                    resp.raise_for_status()
-                except Exception as exc:
-                    logger.warning("Amazon fetch failed for '%s': %s", keyword, exc)
-                    break
-                jobs = resp.json().get("jobs", [])
+                jobs = self._fetch_page(keyword, offset)
+                if jobs is None:
+                    break  # unrecoverable error — skip to next keyword
                 if not jobs:
                     break
                 for job in jobs:
@@ -606,6 +600,42 @@ class AmazonFetcher:
 
         logger.info("Amazon: %d matching jobs found", len(results))
         return results
+
+    def _fetch_page(self, keyword: str, offset: int):
+        """Fetch one page with exponential backoff. Returns job list or None on failure."""
+        import random as _random
+        delay = self._RETRY_BASE_DELAY
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                resp = requests.get(
+                    self._SEARCH_URL,
+                    params={"query": keyword, "country_code": "USA",
+                            "result_limit": self._PAGE_SIZE, "offset": offset},
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)"},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                return resp.json().get("jobs", [])
+            except requests.exceptions.Timeout:
+                logger.warning("Amazon timeout for '%s' offset=%d (attempt %d/%d)",
+                               keyword, offset, attempt + 1, self._MAX_RETRIES)
+            except requests.exceptions.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 429:
+                    logger.warning("Amazon rate-limited for '%s' offset=%d (attempt %d/%d)",
+                                   keyword, offset, attempt + 1, self._MAX_RETRIES)
+                else:
+                    logger.warning("Amazon HTTP error for '%s': %s", keyword, exc)
+                    return None
+            except Exception as exc:
+                logger.warning("Amazon fetch failed for '%s': %s", keyword, exc)
+                return None
+            if attempt < self._MAX_RETRIES - 1:
+                jitter = _random.uniform(0, delay * 0.5)
+                time.sleep(delay + jitter)
+                delay *= 2
+        logger.warning("Amazon: giving up on '%s' offset=%d after %d attempts",
+                       keyword, offset, self._MAX_RETRIES)
+        return None
 
 
 class MicrosoftFetcher:
