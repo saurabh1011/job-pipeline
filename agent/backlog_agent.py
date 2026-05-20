@@ -86,7 +86,14 @@ def create_pr(issue: dict) -> None:
     branch = f"agent/issue-{issue['number']}"
 
     subprocess.run(["git", "checkout", "-b", branch], check=True)
-    subprocess.run(["git", "add", "-A"], check=True)
+
+    # Stage only modified tracked files + new files in code directories.
+    # Never use -A — the repo has untracked mobile/, docs/, logs/ etc.
+    # that must not be swept into agent PRs.
+    subprocess.run(["git", "add", "-u"], check=True)
+    for code_dir in ["pipeline", "tests", "web", "config", "agent"]:
+        if os.path.isdir(code_dir):
+            subprocess.run(["git", "add", code_dir], check=True)
 
     # Check if there's anything staged
     diff_check = subprocess.run(["git", "diff", "--cached", "--quiet"])
