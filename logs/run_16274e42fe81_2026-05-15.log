@@ -1,0 +1,15 @@
+Task ID: 16274e42fe81
+Status:  error
+Started: 2026-05-15T17:51:48.582029+00:00
+Ended:   2026-05-15T17:51:48.585505+00:00
+---
+ERROR: API key for 'gemini' not found. Set it in preferences.yaml under api_keys.gemini or export GEMINI_API_KEY=your-key
+Traceback (most recent call last):
+  File "/Users/saurabhshah/workspace/claudeProjects/jobApplications/web/tasks.py", line 187, in _run
+    result = fn(_log, *args, **kwargs)
+  File "/Users/saurabhshah/workspace/claudeProjects/jobApplications/web/server.py", line 646, in _do_analyze_job
+    provider = create_provider(prefs)
+  File "/Users/saurabhshah/workspace/claudeProjects/jobApplications/pipeline/llm.py", line 323, in create_provider
+    raise ValueError(
+ValueError: API key for 'gemini' not found. Set it in preferences.yaml under api_keys.gemini or export GEMINI_API_KEY=your-key
+

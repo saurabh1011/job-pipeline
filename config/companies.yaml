@@ -1,5 +1,5 @@
 # Company configurations for job fetching
-# ats: greenhouse | ashby | netflix | zillow | amazon | google | apple | meta | microsoft | uber | walmart | linkedin
+# ats: greenhouse | ashby | netflix | zillow | capitalone | amazon | google | apple | meta | microsoft | uber | walmart | linkedin
 
 companies:
 
@@ -124,6 +124,10 @@ companies:
   # ── Custom APIs ─────────────────────────────────────────────────────────────
   - name: Netflix
     ats: netflix
+
+  - name: CapitalOne
+    ats: capitalone
+    fetch_timeout: 60
 
   - name: Zillow
     ats: zillow

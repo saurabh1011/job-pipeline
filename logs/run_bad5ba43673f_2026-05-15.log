@@ -1,0 +1,13 @@
+Task ID: bad5ba43673f
+Status:  error
+Started: 2026-05-15T21:32:37.926118+00:00
+Ended:   2026-05-15T21:32:37.929939+00:00
+---
+ERROR: test error
+Traceback (most recent call last):
+  File "/Users/saurabhshah/workspace/claudeProjects/jobApplications/web/tasks.py", line 187, in _run
+    result = fn(_log, *args, **kwargs)
+  File "/Users/saurabhshah/workspace/claudeProjects/jobApplications/tests/test_tasks.py", line 69, in fn
+    def fn(log): raise RuntimeError("test error")
+RuntimeError: test error
+

@@ -1,0 +1,13 @@
+Task ID: a55960597bb2
+Status:  error
+Started: 2026-05-15T17:41:53.937685+00:00
+Ended:   2026-05-15T17:41:53.944203+00:00
+---
+ERROR: boom
+Traceback (most recent call last):
+  File "/Users/saurabhshah/workspace/claudeProjects/jobApplications/web/tasks.py", line 187, in _run
+    result = fn(_log, *args, **kwargs)
+  File "/Users/saurabhshah/workspace/claudeProjects/jobApplications/tests/test_tasks.py", line 63, in fn
+    def fn(log): raise ValueError("boom")
+ValueError: boom
+
