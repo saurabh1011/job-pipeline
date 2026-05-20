@@ -1080,6 +1080,103 @@ class LinkedInFetcher:
         return results
 
 
+class CapitalOneFetcher:
+    """Fetches jobs from Capital One via the Workday API.
+
+    List:   POST https://capitalone.wd1.myworkdayjobs.com/wday/cxs/capitalone/External_Careers/jobs
+    Detail: GET  https://capitalone.wd1.myworkdayjobs.com/wday/cxs/capitalone/External_Careers{externalPath}
+    Description is only available on the detail endpoint.
+    """
+
+    _LIST_URL = "https://capitalone.wd1.myworkdayjobs.com/wday/cxs/capitalone/External_Careers/jobs"
+    _DETAIL_BASE = "https://capitalone.wd1.myworkdayjobs.com/wday/cxs/capitalone/External_Careers"
+    _JOB_BASE = "https://capitalone.wd1.myworkdayjobs.com/En-US/External_Careers"
+    _PAGE_SIZE = 20
+    _MAX_PAGES = 5
+
+    def __init__(self, company_name: str = "Capital One"):
+        self.company_name = company_name
+
+    def fetch(self, preferences: dict) -> List[dict]:
+        seen_ids: set = set()
+        candidates = []
+        for keyword in preferences.get("title_keywords", ["Engineering Manager"]):
+            offset = 0
+            page = 0
+            while page < self._MAX_PAGES:
+                try:
+                    resp = requests.post(
+                        self._LIST_URL,
+                        json={"limit": self._PAGE_SIZE, "offset": offset, "searchText": keyword},
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)",
+                            "Content-Type": "application/json",
+                            "Accept": "application/json",
+                        },
+                        timeout=15,
+                    )
+                    resp.raise_for_status()
+                except Exception as exc:
+                    logger.warning("Capital One list fetch failed for '%s': %s", keyword, exc)
+                    break
+                data = resp.json()
+                postings = data.get("jobPostings", [])
+                if not postings:
+                    break
+                for posting in postings:
+                    title = posting.get("title", "")
+                    ext_path = posting.get("externalPath", "")
+                    job_id = ext_path.split("_")[-1] if "_" in ext_path else ext_path.rstrip("/").split("/")[-1]
+                    if job_id in seen_ids or not _matches_title(title, preferences):
+                        continue
+                    location = posting.get("locationsText", "")
+                    if not _matches_location(location, preferences):
+                        logger.debug("Excluded by location: %s — %s", title, location)
+                        continue
+                    seen_ids.add(job_id)
+                    candidates.append({
+                        "job_id": job_id,
+                        "title": title,
+                        "location": location,
+                        "ext_path": ext_path,
+                        "url": f"{self._JOB_BASE}{ext_path}",
+                    })
+                if len(postings) < self._PAGE_SIZE:
+                    break
+                offset += self._PAGE_SIZE
+                page += 1
+
+        results = []
+        for c in candidates:
+            try:
+                detail = requests.get(
+                    f"{self._DETAIL_BASE}{c['ext_path']}",
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)",
+                        "Accept": "application/json",
+                    },
+                    timeout=15,
+                )
+                detail.raise_for_status()
+                info = detail.json().get("jobPostingInfo", {})
+                description = _strip_html(info.get("jobDescription", ""))
+            except Exception as exc:
+                logger.warning("Capital One detail fetch failed for %s: %s", c["job_id"], exc)
+                description = ""
+            results.append({
+                "job_id": c["job_id"],
+                "company": self.company_name,
+                "title": c["title"],
+                "location": c["location"],
+                "url": c["url"],
+                "apply_url": c["url"],
+                "description": description,
+            })
+
+        logger.info("Capital One: %d matching jobs found", len(results))
+        return results
+
+
 _FETCHER_MAP = {
     "greenhouse": GreenhouseFetcher,
     "ashby": AshbyFetcher,
@@ -1091,6 +1188,7 @@ _FETCHER_MAP = {
     "microsoft": MicrosoftFetcher,
     "walmart": WalmartFetcher,
     "linkedin": LinkedInFetcher,
+    "capitalone": CapitalOneFetcher,
 }
 
 _PLAYWRIGHT_ATS = {"google", "apple", "meta"}

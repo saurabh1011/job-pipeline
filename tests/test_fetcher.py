@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from pipeline.fetcher import (
     GreenhouseFetcher, UberFetcher, MicrosoftFetcher, WalmartFetcher,
+    CapitalOneFetcher,
     fetch_all_companies, _matches_location, _build_company_prefs,
 )
 import yaml
@@ -824,3 +825,230 @@ class TestWalmartFetcherIntegration:
         walmart_jobs = [j for j in jobs if j["company"] == "Walmart"]
         assert len(walmart_jobs) == 1
         assert walmart_jobs[0]["job_id"] == "R-integration-001"
+
+
+# ── CapitalOneFetcher ─────────────────────────────────────────────────────────
+
+CAPITALONE_LIST_RESPONSE = {
+    "jobPostings": [
+        {
+            "title": "Manager, Software Engineering",
+            "externalPath": "/job/McLean/Manager-Software-Engineering/890/123456001",
+            "locationsText": "McLean, Virginia",
+        },
+        {
+            "title": "Senior Manager, Software Engineering",
+            "externalPath": "/job/New-York/Senior-Manager-Software-Engineering/890/123456002",
+            "locationsText": "New York, New York",
+        },
+        {
+            "title": "Software Engineer",  # should be filtered out
+            "externalPath": "/job/Richmond/Software-Engineer/890/123456003",
+            "locationsText": "Richmond, Virginia",
+        },
+    ],
+    "total": 3,
+}
+
+CAPITALONE_DETAIL_RESPONSE = {
+    "jobPostingInfo": {
+        "jobDescription": "<p>Lead a team of engineers building payment systems.</p>"
+                          "<ul><li>5+ years of EM experience</li></ul>",
+    }
+}
+
+CAPITALONE_PREFS = {
+    "title_keywords": ["Manager, Software Engineering", "Senior Manager, Software Engineering"],
+    "title_exclude_keywords": ["Software Engineer"],
+    "excluded_location_keywords": ["Canada"],
+}
+
+
+def _make_capitalone_mock(list_resp, detail_resp, list_raises=None, detail_raises=None):
+    """Returns a requests side_effect that routes list vs. detail calls."""
+    def side_effect(url, **kwargs):
+        mock = MagicMock()
+        mock.raise_for_status = MagicMock()
+        if "jobs" in url and kwargs.get("json") is not None:
+            # list call (POST)
+            if list_raises:
+                mock.raise_for_status.side_effect = list_raises
+            else:
+                mock.json.return_value = list_resp
+        else:
+            # detail call (GET)
+            if detail_raises:
+                mock.raise_for_status.side_effect = detail_raises
+            else:
+                mock.json.return_value = detail_resp
+        return mock
+    return side_effect
+
+
+@pytest.fixture
+def capitalone_fetcher():
+    return CapitalOneFetcher(company_name="Capital One")
+
+
+class TestCapitalOneFetcher:
+    def test_filters_by_title_keywords(self, capitalone_fetcher):
+        with patch("pipeline.fetcher.requests.post", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, CAPITALONE_DETAIL_RESPONSE
+        )), patch("pipeline.fetcher.requests.get", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, CAPITALONE_DETAIL_RESPONSE
+        )):
+            jobs = capitalone_fetcher.fetch(CAPITALONE_PREFS)
+        titles = [j["title"] for j in jobs]
+        assert "Manager, Software Engineering" in titles
+        assert "Senior Manager, Software Engineering" in titles
+        assert "Software Engineer" not in titles
+
+    def test_returns_normalized_job_dicts(self, capitalone_fetcher):
+        with patch("pipeline.fetcher.requests.post", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, CAPITALONE_DETAIL_RESPONSE
+        )), patch("pipeline.fetcher.requests.get", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, CAPITALONE_DETAIL_RESPONSE
+        )):
+            jobs = capitalone_fetcher.fetch(CAPITALONE_PREFS)
+        assert len(jobs) >= 1
+        job = jobs[0]
+        for key in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
+            assert key in job, f"Missing key: {key}"
+
+    def test_company_name_set(self, capitalone_fetcher):
+        with patch("pipeline.fetcher.requests.post", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, CAPITALONE_DETAIL_RESPONSE
+        )), patch("pipeline.fetcher.requests.get", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, CAPITALONE_DETAIL_RESPONSE
+        )):
+            jobs = capitalone_fetcher.fetch(CAPITALONE_PREFS)
+        assert all(j["company"] == "Capital One" for j in jobs)
+
+    def test_strips_html_from_description(self, capitalone_fetcher):
+        with patch("pipeline.fetcher.requests.post", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, CAPITALONE_DETAIL_RESPONSE
+        )), patch("pipeline.fetcher.requests.get", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, CAPITALONE_DETAIL_RESPONSE
+        )):
+            jobs = capitalone_fetcher.fetch(CAPITALONE_PREFS)
+        for job in jobs:
+            assert "<p>" not in job["description"]
+            assert "<ul>" not in job["description"]
+
+    def test_returns_empty_on_list_http_error(self, capitalone_fetcher):
+        with patch("pipeline.fetcher.requests.post") as mock_post:
+            mock_post.return_value.raise_for_status.side_effect = Exception("HTTP 500")
+            jobs = capitalone_fetcher.fetch(CAPITALONE_PREFS)
+        assert jobs == []
+
+    def test_description_empty_on_detail_error(self, capitalone_fetcher):
+        with patch("pipeline.fetcher.requests.post", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, None
+        )), patch("pipeline.fetcher.requests.get") as mock_get:
+            mock_get.return_value.raise_for_status.side_effect = Exception("HTTP 429")
+            jobs = capitalone_fetcher.fetch(CAPITALONE_PREFS)
+        assert len(jobs) >= 1
+        for job in jobs:
+            assert job["description"] == ""
+
+    def test_deduplicates_across_keywords(self, capitalone_fetcher):
+        single_posting = {
+            "jobPostings": [{
+                "title": "Manager, Software Engineering",
+                "externalPath": "/job/McLean/Manager-Software-Engineering/890/999",
+                "locationsText": "McLean, Virginia",
+            }],
+            "total": 1,
+        }
+        prefs = {**CAPITALONE_PREFS,
+                 "title_keywords": ["Manager, Software Engineering", "Senior Manager, Software Engineering"]}
+        with patch("pipeline.fetcher.requests.post", side_effect=_make_capitalone_mock(
+            single_posting, CAPITALONE_DETAIL_RESPONSE
+        )), patch("pipeline.fetcher.requests.get", side_effect=_make_capitalone_mock(
+            single_posting, CAPITALONE_DETAIL_RESPONSE
+        )):
+            jobs = capitalone_fetcher.fetch(prefs)
+        assert len([j for j in jobs if j["job_id"] == "999"]) == 1
+
+    def test_url_points_to_capitalone_careers(self, capitalone_fetcher):
+        with patch("pipeline.fetcher.requests.post", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, CAPITALONE_DETAIL_RESPONSE
+        )), patch("pipeline.fetcher.requests.get", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, CAPITALONE_DETAIL_RESPONSE
+        )):
+            jobs = capitalone_fetcher.fetch(CAPITALONE_PREFS)
+        for job in jobs:
+            assert "capitalone" in job["url"]
+            assert job["apply_url"] == job["url"]
+
+    def test_filters_by_location(self, capitalone_fetcher):
+        prefs = {**CAPITALONE_PREFS, "location_filter": ["new york"]}
+        with patch("pipeline.fetcher.requests.post", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, CAPITALONE_DETAIL_RESPONSE
+        )), patch("pipeline.fetcher.requests.get", side_effect=_make_capitalone_mock(
+            CAPITALONE_LIST_RESPONSE, CAPITALONE_DETAIL_RESPONSE
+        )):
+            jobs = capitalone_fetcher.fetch(prefs)
+        locations = [j["location"] for j in jobs]
+        assert all("New York" in loc for loc in locations)
+
+
+# ── CapitalOneFetcher — integration ──────────────────────────────────────────
+
+
+def _load_capitalone_company_config():
+    with open(_COMPANIES_YAML_PATH) as f:
+        config = yaml.safe_load(f)
+    companies = config.get("companies", [])
+    return next((c for c in companies if c.get("ats") == "capitalone"), None)
+
+
+class TestCapitalOneFetcherIntegration:
+    """Verify the full path: companies.yaml -> fetch_all_companies -> CapitalOneFetcher."""
+
+    def test_companies_yaml_has_capitalone_entry(self):
+        co = _load_capitalone_company_config()
+        assert co is not None, "companies.yaml must have an entry with ats: capitalone"
+
+    def test_companies_yaml_capitalone_has_title_keywords(self):
+        co = _load_capitalone_company_config()
+        assert co is not None
+        assert "title_keywords" in co, "Capital One entry must define title_keywords"
+        assert any("Manager" in kw for kw in co["title_keywords"]), (
+            "At least one keyword should match Capital One's naming convention"
+        )
+
+    def test_fetch_all_companies_passes_yaml_keywords_to_fetcher(self):
+        co = _load_capitalone_company_config()
+        assert co is not None
+        expected_keywords = co["title_keywords"]
+        captured_prefs = {}
+
+        def capture_fetch(prefs):
+            captured_prefs.update(prefs)
+            return []
+
+        with patch("pipeline.fetcher.CapitalOneFetcher.fetch", side_effect=capture_fetch):
+            fetch_all_companies([co], PREFERENCES)
+
+        assert captured_prefs.get("title_keywords") == expected_keywords
+
+    def test_fetch_all_companies_returns_capitalone_jobs(self):
+        co = _load_capitalone_company_config()
+        assert co is not None
+        fake_job = {
+            "job_id": "123456001",
+            "company": "Capital One",
+            "title": "Manager, Software Engineering",
+            "location": "McLean, Virginia",
+            "url": "https://capitalone.wd1.myworkdayjobs.com/En-US/External_Careers/job/123456001",
+            "apply_url": "https://capitalone.wd1.myworkdayjobs.com/En-US/External_Careers/job/123456001",
+            "description": "Lead engineering teams.",
+        }
+
+        with patch("pipeline.fetcher.CapitalOneFetcher.fetch", return_value=[fake_job]):
+            jobs = fetch_all_companies([co], PREFERENCES)
+
+        co_jobs = [j for j in jobs if j["company"] == "Capital One"]
+        assert len(co_jobs) == 1
+        assert co_jobs[0]["job_id"] == "123456001"

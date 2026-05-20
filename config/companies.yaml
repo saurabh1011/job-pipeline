@@ -1,5 +1,5 @@
 # Company configurations for job fetching
-# ats: greenhouse | ashby | netflix | zillow | amazon | google | apple | meta | microsoft | uber | walmart | linkedin
+# ats: greenhouse | ashby | netflix | zillow | amazon | google | apple | meta | microsoft | uber | walmart | linkedin | capitalone
 
 companies:
 
@@ -150,3 +150,15 @@ companies:
   - name: LinkedIn
     ats: linkedin
     company_id: "1337"
+
+  # ── Capital One (Workday) ────────────────────────────────────────────────────
+  - name: Capital One
+    ats: capitalone
+    # Capital One uses "Manager, Software Engineering" naming instead of "Engineering Manager"
+    title_keywords:
+      - "Manager, Software Engineering"
+      - "Sr. Manager, Software Engineering"
+      - "Senior Manager, Software Engineering"
+      - "Director, Software Engineering"
+      - "Engineering Manager"
+      - "Senior Engineering Manager"
