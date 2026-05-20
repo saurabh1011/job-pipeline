@@ -1,13 +1,21 @@
 name: Backlog Agent
 
-# Trigger: add the label "agent-ready" to any issue
+# Trigger options:
+#   1. Add label "agent-ready" to any issue
+#   2. GitHub Actions UI → Run workflow → enter issue number manually
 on:
   issues:
     types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "GitHub issue number to implement"
+        required: true
+        type: number
 
 jobs:
   implement:
-    if: github.event.label.name == 'agent-ready'
+    if: github.event.label.name == 'agent-ready' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -35,8 +43,17 @@ jobs:
           git config user.name "Backlog Agent"
           git config user.email "agent@noreply.github.com"
 
+      - name: Resolve issue number
+        id: issue
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "number=${{ github.event.inputs.issue_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run backlog agent
-        run: python agent/backlog_agent.py ${{ github.event.issue.number }}
+        run: python agent/backlog_agent.py ${{ steps.issue.outputs.number }}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,7 +61,7 @@ jobs:
       - name: Comment on issue
         if: success()
         run: |
-          gh issue comment ${{ github.event.issue.number }} \
+          gh issue comment ${{ steps.issue.outputs.number }} \
             --body "Agent has finished — a PR has been opened for review."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -52,7 +69,7 @@ jobs:
       - name: Comment on failure
         if: failure()
         run: |
-          gh issue comment ${{ github.event.issue.number }} \
+          gh issue comment ${{ steps.issue.outputs.number }} \
             --body "Agent run failed. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
