@@ -209,9 +209,22 @@ def get_profile_paths(
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _load_prefs(config_dir: str = None) -> dict:
-    with open(os.path.join(config_dir or CONFIG_DIR, "preferences.yaml")) as f:
-        return yaml.safe_load(f) or {}
+def _load_prefs(paths: "ProfilePaths") -> dict:
+    """Load preferences from DB, seeding from preferences.yaml on first access."""
+    store = JobStore(paths.db_path)
+    try:
+        prefs = store.get_prefs()
+        if prefs is None:
+            yaml_path = os.path.join(paths.config_dir, "preferences.yaml")
+            if os.path.exists(yaml_path):
+                with open(yaml_path) as f:
+                    prefs = yaml.safe_load(f) or {}
+            else:
+                prefs = {}
+            store.set_prefs(prefs, changed_by="system:migration")
+    finally:
+        store.close()
+    return prefs
 
 
 def _deserialize_job(job: dict) -> dict:
@@ -353,7 +366,7 @@ def _do_generate_cover_letter(log, company: str, job_id: str, paths: ProfilePath
     from pipeline.generator import ContentGenerator
     from pipeline.llm import create_provider
 
-    prefs = _load_prefs(paths.config_dir)
+    prefs = _load_prefs(paths)
     store = JobStore(paths.db_path)
     try:
         job = store.get_job(company, job_id)
@@ -537,7 +550,7 @@ def _do_run(log, group: str = None, company_filter: list = None,
 
     with open(os.path.join(paths.config_dir, "companies.yaml")) as f:
         all_companies_cfg = yaml.safe_load(f).get("companies", [])
-    prefs = _load_prefs(paths.config_dir)
+    prefs = _load_prefs(paths)
     companies = _resolve_companies(all_companies_cfg, group, company_filter)
     company_names = {c["name"] for c in companies}
     group_label = group or "all"
@@ -650,7 +663,7 @@ def _do_rescore_job(log, company: str, job_id: str, paths: ProfilePaths = None):
 
     if paths is None:
         paths = _legacy_paths()
-    prefs = _load_prefs(paths.config_dir)
+    prefs = _load_prefs(paths)
     provider = create_provider(prefs)
     store = JobStore(paths.db_path)
     try:
@@ -791,7 +804,7 @@ def settings_get_preferences(
     _=Depends(require_api_key),
     paths: ProfilePaths = Depends(get_profile_paths),
 ):
-    prefs = _load_prefs(paths.config_dir)
+    prefs = _load_prefs(paths)
     return {k: v for k, v in prefs.items() if k in _PREFS_UI_KEYS}
 
 
@@ -809,20 +822,19 @@ class PreferencesUpdate(BaseModel):
 @app.put("/api/settings/preferences")
 def settings_save_preferences(
     body: PreferencesUpdate,
-    _=Depends(require_api_key),
+    user: dict = Depends(require_api_key),
     paths: ProfilePaths = Depends(get_profile_paths),
 ):
-    path = os.path.join(paths.config_dir, "preferences.yaml")
-    with open(path) as f:
-        current = yaml.safe_load(f) or {}
+    current = _load_prefs(paths)
     updates = {k: v for k, v in body.dict().items() if v is not None}
     if body.us_only is not None:
         updates["us_only"] = body.us_only
     current.update(updates)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        yaml.dump(current, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    shutil.move(tmp, path)
+    store = JobStore(paths.db_path)
+    try:
+        store.set_prefs(current, changed_by=user.get("email", "unknown"))
+    finally:
+        store.close()
     return {"ok": True}
 
 
@@ -859,7 +871,7 @@ def _do_analyze_job(log, company: str, job_id: str, paths: ProfilePaths = None):
 
     if paths is None:
         paths = _legacy_paths()
-    prefs = _load_prefs(paths.config_dir)
+    prefs = _load_prefs(paths)
     provider = create_provider(prefs)
     store = JobStore(paths.db_path)
     try:
