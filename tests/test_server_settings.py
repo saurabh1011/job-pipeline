@@ -245,11 +245,24 @@ class TestSettingsSavePreferences:
         r = client.get("/api/settings/preferences")
         assert r.json()["match_threshold"] == 9
 
-    def test_update_persisted_to_yaml(self, client, cfg_dir):
+    def test_update_persisted_to_db(self, client, db_path):
         client.put("/api/settings/preferences", json={"match_threshold": 6})
-        with open(cfg_dir / "preferences.yaml") as f:
-            data = yaml.safe_load(f)
-        assert data["match_threshold"] == 6
+        from pipeline.store import JobStore
+        store = JobStore(db_path)
+        prefs = store.get_prefs()
+        store.close()
+        assert prefs["match_threshold"] == 6
+
+    def test_audit_row_written_on_update(self, client, db_path):
+        client.put("/api/settings/preferences", json={"match_threshold": 6})
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute("SELECT diff_json, changed_by FROM preferences_audit ORDER BY id DESC").fetchall()
+        conn.close()
+        assert len(rows) >= 1
+        diff = json.loads(rows[0][0])
+        assert "match_threshold" in diff
+        assert diff["match_threshold"][1] == 6
 
     def test_partial_update_preserves_other_fields(self, client):
         client.put("/api/settings/preferences", json={"match_threshold": 5})

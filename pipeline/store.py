@@ -70,6 +70,22 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 """
 
+_PREFS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS user_preferences (
+    preferences_json TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);
+"""
+
+_PREFS_AUDIT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS preferences_audit (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    changed_at  TEXT NOT NULL,
+    changed_by  TEXT NOT NULL,
+    diff_json   TEXT NOT NULL
+);
+"""
+
 _MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN score_attempted INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE jobs ADD COLUMN match_strengths TEXT",
@@ -89,6 +105,8 @@ class JobStore:
         self._conn.executescript(_SCHEMA)
         self._conn.executescript(_RUNS_SCHEMA)
         self._conn.executescript(_TASKS_SCHEMA)
+        self._conn.executescript(_PREFS_SCHEMA)
+        self._conn.executescript(_PREFS_AUDIT_SCHEMA)
         self._apply_migrations()
         self._conn.commit()
 
@@ -273,6 +291,35 @@ class JobStore:
         if task['result']:
             task['result'] = json.loads(task['result'])
         return task
+
+    # ── Preferences ───────────────────────────────────────────────────────────
+
+    def get_prefs(self) -> Optional[dict]:
+        """Return stored preferences dict, or None if not yet seeded."""
+        row = self._conn.execute(
+            "SELECT preferences_json FROM user_preferences LIMIT 1"
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def set_prefs(self, prefs: dict, changed_by: str) -> None:
+        """Persist preferences and write an audit row with the diff."""
+        old = self.get_prefs() or {}
+        diff = {
+            k: [old.get(k), prefs.get(k)]
+            for k in set(old) | set(prefs)
+            if old.get(k) != prefs.get(k)
+        }
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute("DELETE FROM user_preferences")
+        self._conn.execute(
+            "INSERT INTO user_preferences (preferences_json, updated_at) VALUES (?, ?)",
+            (json.dumps(prefs), now),
+        )
+        self._conn.execute(
+            "INSERT INTO preferences_audit (changed_at, changed_by, diff_json) VALUES (?, ?, ?)",
+            (now, changed_by, json.dumps(diff)),
+        )
+        self._conn.commit()
 
     def close(self):
         """Close database connection."""
