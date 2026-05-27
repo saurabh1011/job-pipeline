@@ -31,12 +31,12 @@ class TestGeminiProvider:
     def test_complete_uses_quality_model(self, provider):
         with patch.object(provider, "_generate", return_value="ok") as mock_gen:
             provider.complete("prompt", max_tokens=100)
-        assert mock_gen.call_args[0][0] == provider.QUALITY_MODEL
+        assert mock_gen.call_args[0][0] == provider._quality_model
 
     def test_complete_fast_uses_fast_model(self, provider):
         with patch.object(provider, "_generate", return_value="ok") as mock_gen:
             provider.complete_fast("prompt", max_tokens=100)
-        assert mock_gen.call_args[0][0] == provider.FAST_MODEL
+        assert mock_gen.call_args[0][0] == provider._fast_model
 
     def test_provider_name(self, provider):
         assert provider.name == "gemini"
