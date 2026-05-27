@@ -511,6 +511,7 @@ def _score_job_list(log, jobs: list, prefs: dict, provider, threshold: int, load
                                  "match_summary": result.summary})
         except Exception as e:
             failed += 1
+            logger.error("Scoring failed for %s/%s: %s", company, job_id, e, exc_info=True)
             log(f"  ERROR: {e}")
     return scored, failed, scored_jobs
 

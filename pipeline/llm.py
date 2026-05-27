@@ -10,9 +10,9 @@ Usage:
     text = provider.complete(prompt, max_tokens=1024)        # quality model
     text = provider.complete_fast(prompt, max_tokens=300)    # cheap/fast model
 
-Provider    Quality model           Fast model
-─────────────────────────────────────────────────────────────────────
-gemini      gemini-2.0-flash        gemini-2.0-flash-lite   (FREE tier)
+Provider    Quality model               Fast model
+─────────────────────────────────────────────────────────────────────────
+gemini      gemini-3.1-flash-lite       gemini-3.1-flash-lite   (FREE tier)
 anthropic   claude-sonnet-4-6       claude-haiku-4-5-20251001
 openai      gpt-4o                  gpt-4o-mini
 ollama      gemma3:12b (default)    gemma3:4b (default)     (LOCAL — no key)
@@ -79,26 +79,28 @@ class LLMProvider(ABC):
 # ── Gemini ────────────────────────────────────────────────────────────────────
 
 class GeminiProvider(LLMProvider):
-    # gemini-3.1-flash-lite-preview: 500 req/day free tier
-    QUALITY_MODEL = "models/gemini-3.1-flash-lite-preview"
-    FAST_MODEL = "models/gemini-3.1-flash-lite-preview"
+    DEFAULT_QUALITY_MODEL = "models/gemini-3.1-flash-lite"
+    DEFAULT_FAST_MODEL = "models/gemini-3.1-flash-lite"
 
     _MAX_RETRIES = 3
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, quality_model: str = DEFAULT_QUALITY_MODEL,
+                 fast_model: str = DEFAULT_FAST_MODEL):
         if _genai is None:
             raise ImportError("google-genai is required: pip install google-genai")
         self._client = _genai.Client(api_key=api_key)
+        self._quality_model = quality_model
+        self._fast_model = fast_model
 
     @property
     def name(self) -> str:
         return "gemini"
 
     def complete(self, prompt: str, max_tokens: int = 1024) -> str:
-        return self._generate(self.QUALITY_MODEL, prompt, max_tokens)
+        return self._generate(self._quality_model, prompt, max_tokens)
 
     def complete_fast(self, prompt: str, max_tokens: int = 300) -> str:
-        return self._generate(self.FAST_MODEL, prompt, max_tokens)
+        return self._generate(self._fast_model, prompt, max_tokens)
 
     def _generate(self, model: str, prompt: str, max_tokens: int) -> str:
         import re as _re
@@ -325,6 +327,12 @@ def create_provider(config: dict) -> LLMProvider:
             f"Set it in preferences.yaml under api_keys.{provider_name} "
             f"or export {env_var}=your-key"
         )
+
+    if provider_name == "gemini":
+        quality_model = config.get("gemini_quality_model", GeminiProvider.DEFAULT_QUALITY_MODEL)
+        fast_model = config.get("gemini_fast_model", GeminiProvider.DEFAULT_FAST_MODEL)
+        logger.info("Using LLM provider: gemini (%s / %s)", quality_model, fast_model)
+        return GeminiProvider(api_key=api_key, quality_model=quality_model, fast_model=fast_model)
 
     logger.info("Using LLM provider: %s", provider_name)
     return _KEYED_PROVIDERS[provider_name](api_key=api_key)

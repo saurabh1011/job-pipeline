@@ -156,8 +156,8 @@ class JobScorer:
                     gaps=data.get("gaps", []),
                     location_note=data.get("location_note", ""),
                 )
-            except (json.JSONDecodeError, ValueError):
-                pass
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.error("Score JSON parse failed: %s | raw: %s", exc, raw[:300])
 
         logger.warning("Could not parse score response: %s", raw[:200])
         return ScoreResult(
