@@ -21,6 +21,14 @@ class JobStatus:
     REJECTED = "rejected"
     OFFER = "offer"
     INTERESTING = "interesting"
+    NOT_AVAILABLE = "not_available"
+
+
+# Statuses that represent jobs still in-play (not terminal, not already unavailable).
+# Only these are considered when computing what's "missing" from a run.
+_ACTIVE_STATUSES = frozenset({
+    JobStatus.NEW, JobStatus.ALERTED, JobStatus.APPROVED, JobStatus.INTERESTING
+})
 
 
 _SCHEMA = """
@@ -130,13 +138,24 @@ class JobStore:
         existing = self.get_job(job["company"], job["job_id"])
         now = datetime.now(timezone.utc).isoformat()
         if existing is not None:
-            self._conn.execute(
-                """UPDATE jobs
-                   SET date_last_sourced = ?,
-                       date_posted = COALESCE(date_posted, ?)
-                   WHERE company = ? AND job_id = ?""",
-                (now, job.get("date_posted"), job["company"], job["job_id"]),
-            )
+            if existing.get("status") == JobStatus.NOT_AVAILABLE:
+                # Job was marked gone but has reappeared — reset to new so it can be re-scored.
+                self._conn.execute(
+                    """UPDATE jobs
+                       SET date_last_sourced = ?,
+                           date_posted = COALESCE(date_posted, ?),
+                           status = 'new'
+                       WHERE company = ? AND job_id = ?""",
+                    (now, job.get("date_posted"), job["company"], job["job_id"]),
+                )
+            else:
+                self._conn.execute(
+                    """UPDATE jobs
+                       SET date_last_sourced = ?,
+                           date_posted = COALESCE(date_posted, ?)
+                       WHERE company = ? AND job_id = ?""",
+                    (now, job.get("date_posted"), job["company"], job["job_id"]),
+                )
             self._conn.commit()
             return False
         self._conn.execute(
@@ -164,6 +183,35 @@ class JobStore:
             (status, company, job_id),
         )
         self._conn.commit()
+
+    def mark_unavailable_jobs(self, company: str, seen_job_ids: set) -> tuple:
+        """Mark active jobs absent from the current run as not_available.
+
+        Only marks when seen_job_ids covers >= 50% of active jobs (threshold guard).
+        Returns (marked_count, n_active, skipped_reason_or_None).
+        """
+        placeholders = ",".join("?" * len(_ACTIVE_STATUSES))
+        rows = self._conn.execute(
+            f"SELECT job_id FROM jobs WHERE company = ? AND status IN ({placeholders})",
+            (company, *_ACTIVE_STATUSES),
+        ).fetchall()
+        active_ids = {row[0] for row in rows}
+        n_active = len(active_ids)
+        n_seen = len(seen_job_ids)
+
+        if n_active > 0 and n_seen < 0.5 * n_active:
+            reason = f"only {n_seen} seen / {n_active} active — threshold not met"
+            return 0, n_active, reason
+
+        missing = active_ids - seen_job_ids
+        if missing:
+            placeholders_m = ",".join("?" * len(missing))
+            self._conn.execute(
+                f"UPDATE jobs SET status = ? WHERE company = ? AND job_id IN ({placeholders_m})",
+                (JobStatus.NOT_AVAILABLE, company, *missing),
+            )
+            self._conn.commit()
+        return len(missing), n_active, None
 
     def set_match_score(
         self,

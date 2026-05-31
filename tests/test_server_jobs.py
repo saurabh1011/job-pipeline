@@ -529,6 +529,111 @@ class TestDoRunEmailIntegration:
         assert len(alert_jobs) == 1
 
 
+def _seed_jobs(db_path, company, job_ids):
+    from pipeline.store import JobStore
+    store = JobStore(db_path)
+    for jid in job_ids:
+        store.upsert_job({
+            "company": company, "job_id": jid, "title": "EM",
+            "location": "NY", "url": "http://x", "apply_url": "http://x",
+            "description": "d",
+        })
+    store.close()
+
+
+def _make_fetched(company, job_ids):
+    return [
+        {"company": company, "job_id": jid, "title": "EM",
+         "location": "NY", "url": "http://x", "apply_url": "http://x", "description": "d"}
+        for jid in job_ids
+    ]
+
+
+class TestNotAvailableStatus:
+    def test_patch_accepts_not_available(self, client, db_path):
+        _seed(db_path)
+        r = client.patch("/api/jobs/Acme/j1", json={"status": "not_available"})
+        assert r.status_code == 200
+        assert r.json()["status"] == "not_available"
+
+    def test_bulk_accepts_not_available(self, client, db_path):
+        _seed(db_path, job_id="j1")
+        _seed(db_path, job_id="j2")
+        r = client.post("/api/jobs/bulk-status", json={
+            "jobs": [{"company": "Acme", "job_id": "j1"}, {"company": "Acme", "job_id": "j2"}],
+            "status": "not_available",
+        })
+        assert r.status_code == 200
+        assert r.json()["updated"] == 2
+
+    def test_not_available_filterable_via_status_query(self, client, db_path):
+        from pipeline.store import JobStore
+        _seed(db_path, job_id="j1")
+        _seed(db_path, job_id="j2")
+        store = JobStore(db_path)
+        store.update_status("Acme", "j1", "not_available")
+        store.close()
+        r = client.get("/api/jobs?status=not_available")
+        jobs = r.json()["jobs"]
+        assert len(jobs) == 1
+        assert jobs[0]["job_id"] == "j1"
+
+
+class TestMarkUnavailableIntegration:
+    def test_missing_jobs_marked_not_available(self, do_run_patches, cfg_dir, db_path):
+        from web.server import _do_run
+        from pipeline.store import JobStore, JobStatus
+
+        _seed_jobs(db_path, "Acme", ["j1", "j2", "j3"])
+
+        with patch("pipeline.fetcher.fetch_all_companies",
+                   return_value=_make_fetched("Acme", ["j1", "j2"])), \
+             patch("web.server._send_pipeline_email"):
+            _do_run(lambda m: None)
+
+        store = JobStore(db_path)
+        assert store.get_job("Acme", "j3")["status"] == JobStatus.NOT_AVAILABLE
+        assert store.get_job("Acme", "j1")["status"] != JobStatus.NOT_AVAILABLE
+        assert store.get_job("Acme", "j2")["status"] != JobStatus.NOT_AVAILABLE
+        store.close()
+
+    def test_threshold_guard_prevents_marking(self, do_run_patches, cfg_dir, db_path):
+        from web.server import _do_run
+        from pipeline.store import JobStore, JobStatus
+
+        _seed_jobs(db_path, "Acme", [f"j{i}" for i in range(10)])
+
+        # 4 seen / 10 active = 40% < 50% threshold
+        with patch("pipeline.fetcher.fetch_all_companies",
+                   return_value=_make_fetched("Acme", ["j0", "j1", "j2", "j3"])), \
+             patch("web.server._send_pipeline_email"):
+            _do_run(lambda m: None)
+
+        store = JobStore(db_path)
+        for i in range(10):
+            assert store.get_job("Acme", f"j{i}")["status"] == JobStatus.NEW
+        store.close()
+
+    def test_reappearing_not_available_job_reset_to_new(self, do_run_patches, cfg_dir, db_path):
+        from web.server import _do_run
+        from pipeline.store import JobStore, JobStatus
+
+        _seed_jobs(db_path, "Acme", ["j1", "j2"])
+        store = JobStore(db_path)
+        store.update_status("Acme", "j1", "not_available")
+        store.close()
+
+        # j1 reappears in current fetch alongside j2
+        with patch("pipeline.fetcher.fetch_all_companies",
+                   return_value=_make_fetched("Acme", ["j1", "j2"])), \
+             patch("web.server._send_pipeline_email"):
+            _do_run(lambda m: None)
+
+        store2 = JobStore(db_path)
+        assert store2.get_job("Acme", "j1")["status"] == JobStatus.NEW
+        store2.close()
+
+
 class TestLogEndpoints:
     @pytest.fixture()
     def log_dir(self, tmp_path):

@@ -93,7 +93,8 @@ main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 .status-interviewing { background: #2a1a40; color: #aa77ff; }
 .status-rejected     { background: #2a1414; color: var(--red); }
 .status-offer        { background: #1a3020; color: #44dd88; }
-.status-interesting  { background: #2a2010; color: #ffaa33; }
+.status-interesting   { background: #2a2010; color: #ffaa33; }
+.status-not_available { background: #1a1a1a; color: #444; }
 
 /* Detail panel */
 #detail-pane { display: none; position: fixed; inset: 0; background: var(--bg); z-index: 100; overflow-y: auto; flex-direction: column; }
