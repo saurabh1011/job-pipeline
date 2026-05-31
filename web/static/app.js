@@ -24,15 +24,16 @@ const App = (() => {
   ];
 
   const ALL_STATUSES = [
-    { key: "new",          label: "New" },
-    { key: "alerted",      label: "Alerted" },
-    { key: "approved",     label: "Approved" },
-    { key: "applied",      label: "Applied" },
-    { key: "skipped",      label: "Skipped" },
-    { key: "interviewing", label: "Interviewing" },
-    { key: "rejected",     label: "Rejected" },
-    { key: "offer",        label: "Offer" },
-    { key: "interesting",  label: "Interesting" },
+    { key: "new",           label: "New" },
+    { key: "alerted",       label: "Alerted" },
+    { key: "approved",      label: "Approved" },
+    { key: "applied",       label: "Applied" },
+    { key: "skipped",       label: "Skipped" },
+    { key: "interviewing",  label: "Interviewing" },
+    { key: "rejected",      label: "Rejected" },
+    { key: "offer",         label: "Offer" },
+    { key: "interesting",   label: "Interesting" },
+    { key: "not_available", label: "Not Available" },
   ];
 
   // ── Auth ────────────────────────────────────────────────────────────────

@@ -322,7 +322,8 @@ def update_job_status(
 ):
     allowed = {JobStatus.APPROVED, JobStatus.SKIPPED, JobStatus.APPLIED,
                JobStatus.ALERTED, JobStatus.NEW, JobStatus.INTERVIEWING,
-               JobStatus.REJECTED, JobStatus.OFFER, JobStatus.INTERESTING}
+               JobStatus.REJECTED, JobStatus.OFFER, JobStatus.INTERESTING,
+               JobStatus.NOT_AVAILABLE}
     if body.status not in allowed:
         raise HTTPException(status_code=400, detail=f"Invalid status: {body.status}")
     store = JobStore(paths.db_path)
@@ -344,7 +345,8 @@ def bulk_update_status(
 ):
     allowed = {JobStatus.APPROVED, JobStatus.SKIPPED, JobStatus.APPLIED,
                JobStatus.ALERTED, JobStatus.NEW, JobStatus.INTERVIEWING,
-               JobStatus.REJECTED, JobStatus.OFFER, JobStatus.INTERESTING}
+               JobStatus.REJECTED, JobStatus.OFFER, JobStatus.INTERESTING,
+               JobStatus.NOT_AVAILABLE}
     if body.status not in allowed:
         raise HTTPException(status_code=400, detail=f"Invalid status: {body.status}")
     store = JobStore(paths.db_path)
@@ -583,9 +585,27 @@ def _do_run(log, group: str = None, company_filter: list = None,
             fetched_all = fetch_all_companies(companies, prefs, log=log,
                                               fetch_errors=fetch_errors)
             store = JobStore(paths.db_path)
+            seen_per_company: dict = {}
             for job in fetched_all:
                 if store.upsert_job(job):
                     new_jobs.append(job)
+                cname = job["company"]
+                if cname not in seen_per_company:
+                    seen_per_company[cname] = set()
+                seen_per_company[cname].add(job["job_id"])
+
+            # Mark jobs not returned this run as not_available, per company.
+            n_run = len(companies)
+            for ci, company_cfg in enumerate(companies, 1):
+                cname = company_cfg["name"]
+                seen_ids = seen_per_company.get(cname, set())
+                log(f"[{ci}/{n_run}] Marking unavailable — {cname}")
+                marked, n_active, reason = store.mark_unavailable_jobs(cname, seen_ids)
+                if reason:
+                    log(f"  → skipped ({reason})")
+                else:
+                    log(f"  → {marked} marked not_available ({len(seen_ids)} seen / {n_active} active)")
+
             store.close()
             log(f"Fetched {len(fetched_all)} matching jobs, {len(new_jobs)} new")
             if action == "source":

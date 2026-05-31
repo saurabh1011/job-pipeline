@@ -285,3 +285,122 @@ class TestSetAnalysis:
         assert "match_resume_suggestions" in job
         assert job["match_requirements"] is None
         assert job["match_resume_suggestions"] is None
+
+
+class TestMarkUnavailableJobs:
+    def test_marks_missing_active_jobs_not_available(self, store):
+        for jid in ["j1", "j2", "j3"]:
+            store.upsert_job(make_job(job_id=jid))
+        marked, n_active, reason = store.mark_unavailable_jobs("Acme", {"j1", "j2"})
+        assert marked == 1
+        assert reason is None
+        assert store.get_job("Acme", "j3")["status"] == "not_available"
+        assert store.get_job("Acme", "j1")["status"] == "new"
+        assert store.get_job("Acme", "j2")["status"] == "new"
+
+    def test_threshold_guard_skips_marking(self, store):
+        for i in range(10):
+            store.upsert_job(make_job(job_id=str(i)))
+        marked, n_active, reason = store.mark_unavailable_jobs("Acme", {"0", "1", "2", "3"})
+        assert marked == 0
+        assert reason is not None
+        assert "threshold" in reason.lower()
+        for i in range(10):
+            assert store.get_job("Acme", str(i))["status"] == "new"
+
+    def test_already_unavailable_jobs_not_in_active_set(self, store):
+        for jid in ["j1", "j2", "j3", "j4"]:
+            store.upsert_job(make_job(job_id=jid))
+        store.update_status("Acme", "j4", "not_available")
+        marked, n_active, reason = store.mark_unavailable_jobs("Acme", {"j1", "j2", "j3"})
+        assert marked == 0
+        assert n_active == 3
+        assert reason is None
+
+    def test_terminal_status_jobs_excluded_from_active(self, store):
+        store.upsert_job(make_job(job_id="applied1"))
+        store.update_status("Acme", "applied1", "applied")
+        store.upsert_job(make_job(job_id="new1"))
+        marked, n_active, reason = store.mark_unavailable_jobs("Acme", {"new1"})
+        assert marked == 0
+        assert n_active == 1
+        assert reason is None
+        assert store.get_job("Acme", "applied1")["status"] == "applied"
+
+    def test_all_terminal_statuses_excluded(self, store):
+        for status in ["applied", "interviewing", "rejected", "offer", "skipped", "not_available"]:
+            store.upsert_job(make_job(job_id=status))
+            store.update_status("Acme", status, status)
+        marked, n_active, reason = store.mark_unavailable_jobs("Acme", set())
+        assert marked == 0
+        assert n_active == 0
+        assert reason is None
+
+    def test_returns_correct_marked_count(self, store):
+        for jid in ["j1", "j2", "j3", "j4"]:
+            store.upsert_job(make_job(job_id=jid))
+        marked, n_active, reason = store.mark_unavailable_jobs("Acme", {"j1", "j2"})
+        assert marked == 2
+        assert n_active == 4
+        assert reason is None
+
+    def test_empty_seen_below_threshold_skips(self, store):
+        for jid in ["j1", "j2", "j3", "j4"]:
+            store.upsert_job(make_job(job_id=jid))
+        marked, n_active, reason = store.mark_unavailable_jobs("Acme", set())
+        assert marked == 0
+        assert reason is not None
+
+    def test_no_active_jobs_returns_zero_no_skip(self, store):
+        marked, n_active, reason = store.mark_unavailable_jobs("Acme", set())
+        assert marked == 0
+        assert n_active == 0
+        assert reason is None
+
+    def test_isolates_by_company(self, store):
+        store.upsert_job(make_job(company="Acme", job_id="j1"))
+        store.upsert_job(make_job(company="Acme", job_id="j2"))
+        store.upsert_job(make_job(company="Google", job_id="g1"))
+        marked, _, _ = store.mark_unavailable_jobs("Acme", {"j1"})
+        assert marked == 1
+        assert store.get_job("Acme", "j2")["status"] == "not_available"
+        assert store.get_job("Google", "g1")["status"] == "new"
+
+    def test_seen_at_exactly_threshold_does_not_skip(self, store):
+        for i in range(4):
+            store.upsert_job(make_job(job_id=str(i)))
+        # 2 seen / 4 active = 50%, not less than 50%, so should mark
+        marked, n_active, reason = store.mark_unavailable_jobs("Acme", {"0", "1"})
+        assert reason is None
+        assert marked == 2
+
+
+class TestUpsertReAvailability:
+    def test_not_available_job_reappearing_resets_to_new(self, store):
+        store.upsert_job(make_job())
+        store.update_status("Acme", "123", "not_available")
+        assert store.get_job("Acme", "123")["status"] == "not_available"
+        store.upsert_job(make_job())
+        assert store.get_job("Acme", "123")["status"] == "new"
+
+    def test_upsert_of_not_available_job_still_returns_false(self, store):
+        store.upsert_job(make_job())
+        store.update_status("Acme", "123", "not_available")
+        is_new = store.upsert_job(make_job())
+        assert is_new is False
+
+    def test_non_not_available_status_unchanged_on_upsert(self, store):
+        store.upsert_job(make_job())
+        store.update_status("Acme", "123", "approved")
+        store.upsert_job(make_job())
+        assert store.get_job("Acme", "123")["status"] == "approved"
+
+    def test_not_available_reset_updates_date_last_sourced(self, store):
+        import time
+        store.upsert_job(make_job())
+        store.update_status("Acme", "123", "not_available")
+        first_sourced = store.get_job("Acme", "123")["date_last_sourced"]
+        time.sleep(0.01)
+        store.upsert_job(make_job())
+        second_sourced = store.get_job("Acme", "123")["date_last_sourced"]
+        assert second_sourced >= first_sourced
