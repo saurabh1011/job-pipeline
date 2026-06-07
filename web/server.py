@@ -6,16 +6,18 @@ Run from project root:
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
 import yaml
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel

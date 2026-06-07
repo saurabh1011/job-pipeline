@@ -70,6 +70,22 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 """
 
+_FEEDBACK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS feedback_submissions (
+    id                  TEXT PRIMARY KEY,
+    user_email          TEXT,
+    title               TEXT NOT NULL,
+    description         TEXT NOT NULL,
+    category            TEXT NOT NULL,
+    github_issue_number INTEGER,
+    github_issue_url    TEXT,
+    app_version         TEXT,
+    ip_address          TEXT,
+    submitted_at        TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'pending'
+);
+"""
+
 _MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN score_attempted INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE jobs ADD COLUMN match_strengths TEXT",
@@ -89,6 +105,7 @@ class JobStore:
         self._conn.executescript(_SCHEMA)
         self._conn.executescript(_RUNS_SCHEMA)
         self._conn.executescript(_TASKS_SCHEMA)
+        self._conn.executescript(_FEEDBACK_SCHEMA)
         self._apply_migrations()
         self._conn.commit()
 
@@ -273,6 +290,63 @@ class JobStore:
         if task['result']:
             task['result'] = json.loads(task['result'])
         return task
+
+    def save_feedback(self, submission_id: str, user_email: Optional[str], title: str,
+                     description: str, category: str, ip_address: str,
+                     app_version: str = "1.0.0") -> None:
+        """Save feedback submission to database.
+
+        Args:
+            submission_id: Unique feedback submission ID
+            user_email: Optional email for follow-up
+            title: Feedback title
+            description: Feedback description
+            category: Category (bug, feature, feedback)
+            ip_address: Submitter IP address
+            app_version: App version at time of submission
+        """
+        self._conn.execute(
+            """INSERT INTO feedback_submissions
+               (id, user_email, title, description, category, ip_address, app_version, submitted_at, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (submission_id, user_email, title, description, category, ip_address, app_version,
+             datetime.now(timezone.utc).isoformat(), "pending")
+        )
+        self._conn.commit()
+
+    def get_feedback(self, submission_id: str) -> Optional[dict]:
+        """Retrieve feedback submission from database.
+
+        Args:
+            submission_id: Feedback submission ID
+
+        Returns:
+            Feedback dict or None if not found
+        """
+        row = self._conn.execute(
+            "SELECT * FROM feedback_submissions WHERE id = ?",
+            (submission_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_feedback_status(self, submission_id: str, status: str,
+                              github_issue_number: Optional[int] = None,
+                              github_issue_url: Optional[str] = None) -> None:
+        """Update feedback submission status.
+
+        Args:
+            submission_id: Feedback submission ID
+            status: New status (pending, created, failed)
+            github_issue_number: GitHub issue number if created
+            github_issue_url: GitHub issue URL if created
+        """
+        self._conn.execute(
+            """UPDATE feedback_submissions
+               SET status = ?, github_issue_number = ?, github_issue_url = ?
+               WHERE id = ?""",
+            (status, github_issue_number, github_issue_url, submission_id)
+        )
+        self._conn.commit()
 
     def close(self):
         """Close database connection."""
