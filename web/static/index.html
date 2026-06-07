@@ -52,10 +52,27 @@
       </div>
       <div class="user-info">
         <span id="user-name" class="user-name-label"></span>
+        <button class="btn-ghost btn-sm" onclick="App.openFeedback()">Feedback</button>
         <button class="btn-ghost btn-sm" onclick="App.logout()">Sign out</button>
       </div>
     </div>
   </header>
+
+  <!-- Feedback modal -->
+  <div id="feedback-overlay" style="display:none">
+    <div class="feedback-box">
+      <div class="feedback-header">
+        <h2>Send Feedback</h2>
+        <button class="btn-ghost btn-sm" onclick="App.closeFeedback()">✕</button>
+      </div>
+      <input id="feedback-title" class="feedback-input" type="text" placeholder="Title (optional)" maxlength="200">
+      <textarea id="feedback-body" class="feedback-textarea" placeholder="Describe the issue or suggestion…" rows="6" maxlength="4000"></textarea>
+      <div class="feedback-footer">
+        <span id="feedback-status" class="save-status"></span>
+        <button class="btn-primary btn-sm" onclick="App.submitFeedback()">Submit</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Top-level view tabs -->
   <nav id="main-tabs">
