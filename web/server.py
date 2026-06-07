@@ -1167,6 +1167,22 @@ def admin_update_user(
     return {"ok": True}
 
 
+# ── Feedback ─────────────────────────────────────────────────────────────────
+
+class FeedbackRequest(BaseModel):
+    title: Optional[str] = None
+    body: str
+
+
+@app.post("/api/feedback", status_code=201)
+def submit_feedback(req: FeedbackRequest, user: dict = Depends(require_api_key)):
+    if not req.body.strip():
+        raise HTTPException(status_code=400, detail="Feedback body cannot be empty")
+    from web.feedback import create_github_issue
+    issue = create_github_issue(req.title or "", req.body, user)
+    return {"issue_url": issue["html_url"], "issue_number": issue["number"]}
+
+
 # ── Resume upload ─────────────────────────────────────────────────────────────
 
 _ALLOWED_RESUME_EXTS = {".pdf", ".docx", ".txt"}

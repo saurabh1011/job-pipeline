@@ -1339,6 +1339,42 @@ const App = (() => {
     } catch (e) { alert(e.message); }
   }
 
+  // ── Feedback ──────────────────────────────────────────────────────────────
+
+  function openFeedback() {
+    document.getElementById("feedback-title").value = "";
+    document.getElementById("feedback-body").value = "";
+    document.getElementById("feedback-status").textContent = "";
+    document.getElementById("feedback-overlay").style.display = "flex";
+    document.getElementById("feedback-body").focus();
+  }
+
+  function closeFeedback() {
+    document.getElementById("feedback-overlay").style.display = "none";
+  }
+
+  async function submitFeedback() {
+    const title = document.getElementById("feedback-title").value.trim();
+    const body = document.getElementById("feedback-body").value.trim();
+    const statusEl = document.getElementById("feedback-status");
+    if (!body) {
+      statusEl.textContent = "Please enter a description.";
+      statusEl.className = "save-status save-error";
+      return;
+    }
+    statusEl.textContent = "Submitting…";
+    statusEl.className = "save-status";
+    try {
+      const data = await _api("POST", "/api/feedback", { title, body });
+      statusEl.textContent = `Submitted! Issue #${data.issue_number}`;
+      statusEl.className = "save-status save-ok";
+      setTimeout(closeFeedback, 2000);
+    } catch (e) {
+      statusEl.textContent = `Failed: ${e.message}`;
+      statusEl.className = "save-status save-error";
+    }
+  }
+
   // ── Init ──────────────────────────────────────────────────────────────────
 
   async function init() {
@@ -1381,5 +1417,6 @@ const App = (() => {
            logout, adminAddEmail, adminRemoveEmail,
            switchProfile, createProfile, createProfileFromForm, renameProfile, deleteProfile,
            uploadResume, deleteResume,
-           saveSchedule, clearSchedule };
+           saveSchedule, clearSchedule,
+           openFeedback, closeFeedback, submitFeedback };
 })();

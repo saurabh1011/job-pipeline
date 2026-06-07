@@ -232,6 +232,17 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .chip-x:hover { color: var(--red); }
 .chip-input { border: none; background: none; color: var(--text); font-size: 12px; font-family: var(--font); outline: none; min-width: 80px; flex: 1; padding: 2px 4px; }
 
+/* Feedback modal */
+#feedback-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 998; }
+.feedback-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; width: 480px; max-width: 95vw; display: flex; flex-direction: column; gap: 12px; }
+.feedback-header { display: flex; align-items: center; justify-content: space-between; }
+.feedback-header h2 { font-size: 15px; font-weight: 600; }
+.feedback-input { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; font-family: var(--font); padding: 8px 10px; outline: none; width: 100%; }
+.feedback-input:focus { border-color: var(--accent); }
+.feedback-textarea { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 13px; font-family: var(--font); padding: 8px 10px; outline: none; width: 100%; resize: vertical; }
+.feedback-textarea:focus { border-color: var(--accent); }
+.feedback-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+
 /* Auth overlay */
 #auth-overlay { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 999; }
 .auth-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 40px 32px; width: 320px; text-align: center; }
