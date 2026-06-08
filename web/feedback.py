@@ -27,7 +27,7 @@ def create_github_issue(title: str, body: str, user: dict) -> dict:
 
     user_id = user.get("user_id", "unknown")
     now = time.monotonic()
-    if now - _last_submission.get(user_id, 0) < _COOLDOWN_SECS:
+    if now - _last_submission.get(user_id, float("-inf")) < _COOLDOWN_SECS:
         raise HTTPException(status_code=429, detail="Please wait before submitting another feedback")
 
     submitted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
