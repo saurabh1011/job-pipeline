@@ -2,11 +2,13 @@
 import time
 import pytest
 from unittest.mock import patch, MagicMock
+from datetime import date
 from pipeline.fetcher import (
     GreenhouseFetcher, UberFetcher, MicrosoftFetcher, WalmartFetcher,
-    CapitalOneFetcher,
+    CapitalOneFetcher, JSearchFetcher,
     fetch_all_companies, _matches_location, _build_company_prefs,
 )
+import pipeline.fetcher as fetcher_mod
 import yaml
 
 
@@ -114,6 +116,148 @@ class TestGreenhouseFetcher:
         url = mock_get.call_args[0][0]
         assert "uber" in url
         assert "greenhouse" in url.lower()
+
+
+# ── JSearch Fetcher ───────────────────────────────────────────────────────────
+
+JSEARCH_RESPONSE_PAGE1 = {
+    "data": [
+        {
+            "job_id": "js_001",
+            "job_title": "Engineering Manager, Ads",
+            "job_city": "New York",
+            "job_state": "NY",
+            "job_country": "US",
+            "job_apply_link": "https://jobs.apple.com/001",
+            "job_description": "Lead a team building ads infrastructure.",
+        },
+        {
+            "job_id": "js_002",
+            "job_title": "Software Engineer",  # filtered by title
+            "job_city": "Remote",
+            "job_state": "",
+            "job_country": "US",
+            "job_apply_link": "https://jobs.apple.com/002",
+            "job_description": "Build backend services.",
+        },
+    ]
+}
+
+JSEARCH_EMPTY = {"data": []}
+
+
+@pytest.fixture(autouse=True)
+def reset_jsearch_counter():
+    fetcher_mod._jsearch_calls_today = 0
+    fetcher_mod._jsearch_date = None
+    yield
+    fetcher_mod._jsearch_calls_today = 0
+    fetcher_mod._jsearch_date = None
+
+
+class TestJSearchFetcher:
+    def _mock_get(self, pages):
+        mock = MagicMock()
+        mock.status_code = 200
+        mock.json.side_effect = pages
+        return mock
+
+    def test_returns_title_filtered_jobs(self):
+        fetcher = JSearchFetcher("Apple", "Apple", "test_key")
+        mock_resp = self._mock_get([JSEARCH_RESPONSE_PAGE1, JSEARCH_EMPTY])
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            jobs = fetcher.fetch(PREFERENCES)
+        assert len(jobs) == 1
+        assert jobs[0]["title"] == "Engineering Manager, Ads"
+        assert jobs[0]["company"] == "Apple"
+
+    def test_returns_normalized_job_dict_fields(self):
+        fetcher = JSearchFetcher("Apple", "Apple", "test_key")
+        mock_resp = self._mock_get([JSEARCH_RESPONSE_PAGE1, JSEARCH_EMPTY])
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            jobs = fetcher.fetch(PREFERENCES)
+        job = jobs[0]
+        for field in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
+            assert field in job
+
+    def test_raises_when_api_key_missing(self):
+        fetcher = JSearchFetcher("Apple", "Apple", "")
+        with pytest.raises(ValueError, match="JSEARCH_API_KEY"):
+            fetcher.fetch(PREFERENCES)
+
+    def test_raises_on_non_200_response(self):
+        fetcher = JSearchFetcher("Apple", "Apple", "test_key")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 429
+        mock_resp.text = "Too Many Requests"
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            with pytest.raises(Exception, match="429"):
+                fetcher.fetch(PREFERENCES)
+
+    def test_stops_fetching_pages_when_empty_page_returned(self):
+        fetcher = JSearchFetcher("Apple", "Apple", "test_key")
+        mock_resp = self._mock_get([JSEARCH_EMPTY])
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp) as mock_get:
+            fetcher.fetch(PREFERENCES)
+        assert mock_get.call_count == 1
+
+    def test_increments_daily_counter(self):
+        fetcher = JSearchFetcher("Apple", "Apple", "test_key")
+        mock_resp = self._mock_get([JSEARCH_EMPTY])
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            fetcher.fetch(PREFERENCES)
+        assert fetcher_mod._jsearch_calls_today == 1
+
+    def test_skips_all_pages_when_daily_limit_reached(self, monkeypatch):
+        monkeypatch.setattr(fetcher_mod, "_jsearch_calls_today", 40)
+        monkeypatch.setattr(fetcher_mod, "_jsearch_date", date.today())
+        monkeypatch.setenv("JSEARCH_DAILY_LIMIT", "40")
+        fetcher = JSearchFetcher("Apple", "Apple", "test_key")
+        with patch("pipeline.fetcher.requests.get") as mock_get:
+            jobs = fetcher.fetch(PREFERENCES)
+        mock_get.assert_not_called()
+        assert jobs == []
+
+    def test_resets_counter_on_new_day(self, monkeypatch):
+        from datetime import date as d
+        monkeypatch.setattr(fetcher_mod, "_jsearch_calls_today", 99)
+        monkeypatch.setattr(fetcher_mod, "_jsearch_date", d(2020, 1, 1))
+        fetcher = JSearchFetcher("Apple", "Apple", "test_key")
+        mock_resp = self._mock_get([JSEARCH_EMPTY])
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            fetcher.fetch(PREFERENCES)
+        assert fetcher_mod._jsearch_calls_today == 1
+
+
+class TestFetchAllCompaniesWithCounts:
+    def test_fetch_counts_populated_zero_results(self):
+        companies = [{"name": "Acme", "ats": "greenhouse", "board_slug": "acme"}]
+        prefs = PREFERENCES.copy()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"jobs": []}
+        mock_resp.raise_for_status = MagicMock()
+        fetch_counts = {}
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            fetch_all_companies(companies, prefs, fetch_counts=fetch_counts)
+        assert "Acme" in fetch_counts
+        assert fetch_counts["Acme"] == 0
+
+    def test_errored_company_in_fetch_errors_not_zero_companies(self):
+        # JSearchFetcher raises ValueError for missing API key — this propagates
+        # through the thread to fetch_errors, not into zero_companies
+        companies = [{"name": "Google", "ats": "jsearch", "employer": "Google"}]
+        prefs = PREFERENCES.copy()
+        fetch_errors = {}
+        fetch_counts = {}
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop("JSEARCH_API_KEY", None)
+            fetch_all_companies(companies, prefs,
+                                fetch_errors=fetch_errors,
+                                fetch_counts=fetch_counts)
+        assert "Google" in fetch_errors
+        zero_companies = [n for n, c in fetch_counts.items() if c == 0 and n not in fetch_errors]
+        assert "Google" not in zero_companies
 
 
 # ── Title Filter Logic ────────────────────────────────────────────────────────

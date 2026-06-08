@@ -573,6 +573,7 @@ def _do_run(log, group: str = None, company_filter: list = None,
     failed_scoring = 0
     all_scored_jobs = []
     fetch_errors = {}
+    fetch_counts = {}
     _run_error = None
 
     try:
@@ -583,7 +584,8 @@ def _do_run(log, group: str = None, company_filter: list = None,
             if uses_playwright:
                 log("Launching browser (Playwright) — this may take several minutes...")
             fetched_all = fetch_all_companies(companies, prefs, log=log,
-                                              fetch_errors=fetch_errors)
+                                              fetch_errors=fetch_errors,
+                                              fetch_counts=fetch_counts)
             store = JobStore(paths.db_path)
             seen_per_company: dict = {}
             for job in fetched_all:
@@ -658,6 +660,10 @@ def _do_run(log, group: str = None, company_filter: list = None,
 
         try:
             from datetime import date as _date
+            _zero_companies = [
+                name for name, count in fetch_counts.items()
+                if count == 0 and name not in fetch_errors
+            ]
             _stats = {
                 "total_fetched": len(fetched_all),
                 "new_jobs": len(new_jobs),
@@ -667,6 +673,7 @@ def _do_run(log, group: str = None, company_filter: list = None,
                 "threshold": threshold,
                 "run_date": str(_date.today()),
                 "fetch_errors": fetch_errors,
+                "zero_companies": _zero_companies,
                 "run_error": _run_error,
             }
             _alert_jobs = [j for j in all_scored_jobs if (j.get("match_score") or 0) >= threshold]

@@ -16,8 +16,9 @@ _last_submission: dict[str, float] = {}
 
 
 def create_github_issue(title: str, body: str, user: dict) -> dict:
-    token = os.environ.get("GH_FEEDBACK_TOKEN", GH_FEEDBACK_TOKEN)
-    repo = os.environ.get("GH_FEEDBACK_REPO", GH_FEEDBACK_REPO)
+    import web.feedback as _self
+    token = os.environ.get("GH_FEEDBACK_TOKEN") or _self.GH_FEEDBACK_TOKEN
+    repo = os.environ.get("GH_FEEDBACK_REPO") or _self.GH_FEEDBACK_REPO
     if not token or not repo:
         raise HTTPException(
             status_code=503,
@@ -26,7 +27,7 @@ def create_github_issue(title: str, body: str, user: dict) -> dict:
 
     user_id = user.get("user_id", "unknown")
     now = time.monotonic()
-    if now - _last_submission.get(user_id, 0) < _COOLDOWN_SECS:
+    if now - _last_submission.get(user_id, float("-inf")) < _COOLDOWN_SECS:
         raise HTTPException(status_code=429, detail="Please wait before submitting another feedback")
 
     submitted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

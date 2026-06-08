@@ -37,10 +37,12 @@ def cfg_dir(tmp_path):
 def auth_setup(tmp_path, monkeypatch, cfg_dir):
     db_path = str(tmp_path / "test.db")
     auth_path = str(tmp_path / "auth.db")
+    profile_dir = str(tmp_path / "profile")
     monkeypatch.setattr(adb, "AUTH_DB_PATH", auth_path)
     monkeypatch.setattr(server_module, "AUTH_DB_PATH", auth_path)
     monkeypatch.setattr(server_module, "CONFIG_DIR", str(cfg_dir))
     monkeypatch.setattr(server_module, "DB_PATH", db_path)
+    monkeypatch.setattr(server_module, "PROFILE_DIR", profile_dir)
     monkeypatch.delenv("WEB_API_KEY", raising=False)
     adb.init_db()
     server_module._auth_db.AUTH_DB_PATH = auth_path

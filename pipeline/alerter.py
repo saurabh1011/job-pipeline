@@ -120,18 +120,21 @@ def build_summary_email(
     run_date = stats.get("run_date", str(date.today()))
 
     fetch_errors = stats.get("fetch_errors") or {}
+    zero_companies = stats.get("zero_companies") or []
     run_error = stats.get("run_error")
 
     if run_error:
         subject = f"[Job Pipeline] {run_date} — PIPELINE FAILED"
     else:
         error_suffix = f", {len(fetch_errors)} fetch error{'s' if len(fetch_errors) != 1 else ''}" if fetch_errors else ""
+        zero_suffix = f", {len(zero_companies)} returned 0 jobs" if zero_companies else ""
         subject = (
             f"[Job Pipeline] {run_date} — "
             f"{stats.get('total_fetched', 0)} scanned, "
             f"{stats.get('new_jobs', 0)} new, "
             f"{high_count} high-match"
             f"{error_suffix}"
+            f"{zero_suffix}"
         )
 
     # Score distribution buckets
@@ -191,6 +194,19 @@ def build_summary_email(
         ]
         for company, error in fetch_errors.items():
             lines.append(f"  {company}: {error}")
+        lines.append("")
+
+    # ── Sourcing gaps section ─────────────────────────────────────────────────
+    if zero_companies:
+        n = len(zero_companies)
+        lines += [
+            "=" * 60,
+            f"SOURCING GAPS ({n} {'company' if n == 1 else 'companies'} returned 0 jobs)",
+            "=" * 60,
+            "",
+        ]
+        for company in zero_companies:
+            lines.append(f"  {company}: 0 jobs returned (no error — may be blocked or misconfigured)")
         lines.append("")
 
     # ── High-match jobs section ───────────────────────────────────────────────

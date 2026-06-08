@@ -46,6 +46,15 @@ HTTP-based fetchers despite also being large companies.
 state for long runs is NOT currently checkpointed — a crash loses that run's
 fetched jobs. Re-running will re-fetch.
 
+## PR workflow
+
+All changes go through a pull request. Never push directly to main.
+
+- Create a branch, commit, push, open a PR
+- Fix CI until all checks are green
+- Tell the user "CI is green, ready for your review" — then stop
+- Never merge a PR. Merging is always the user's decision after their review
+
 ## Testing requirements
 
 Every feature must have unit AND integration tests before it is committed.
