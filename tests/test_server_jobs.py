@@ -501,7 +501,7 @@ class TestDoRunEmailIntegration:
     def test_fetch_errors_flow_to_email_stats(self, do_run_patches, cfg_dir, db_path):
         from web.server import _do_run
 
-        def fetch_with_errors(companies, prefs, log=None, fetch_errors=None):
+        def fetch_with_errors(companies, prefs, log=None, fetch_errors=None, fetch_counts=None):
             if fetch_errors is not None:
                 fetch_errors["Acme"] = "TIMEOUT after 60s"
             return []

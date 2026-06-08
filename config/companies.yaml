@@ -1,17 +1,20 @@
 # Company configurations for job fetching
-# ats: greenhouse | ashby | netflix | zillow | amazon | google | apple | meta | microsoft | uber | walmart | linkedin | capitalone
+# ats: greenhouse | ashby | netflix | zillow | amazon | jsearch | microsoft | uber | walmart | linkedin | capitalone
 
 companies:
 
-  # ── Playwright-based (React/SPA sites) ─────────────────────────────────────
+  # ── JSearch (RapidAPI) — requires JSEARCH_API_KEY env var ──────────────────
   - name: Google
-    ats: google
+    ats: jsearch
+    employer: "Google"
 
   - name: Apple
-    ats: apple
+    ats: jsearch
+    employer: "Apple"
 
   - name: Meta
-    ats: meta
+    ats: jsearch
+    employer: "Meta"
 
   - name: Microsoft
     ats: microsoft

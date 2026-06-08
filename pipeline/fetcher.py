@@ -13,16 +13,21 @@ Each fetcher.fetch(preferences) returns a list of normalized job dicts:
 """
 import copy
 import logging
+import os
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import date as _date_cls, datetime, timezone
 from typing import List, Dict, Any
 
 import requests
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
+
+# ── JSearch rate-limit state (module-level, resets daily) ─────────────────────
+_jsearch_calls_today: int = 0
+_jsearch_date = None
 
 
 def _strip_html(html: str) -> str:
@@ -1177,6 +1182,91 @@ class CapitalOneFetcher:
         return results
 
 
+class JSearchFetcher:
+    """Fetches jobs from JSearch (RapidAPI) for any employer by name.
+
+    Requires JSEARCH_API_KEY env var. Respects a daily call budget set by
+    JSEARCH_DAILY_LIMIT (default 40) to control API costs.
+    """
+
+    _BASE_URL = "https://jsearch.p.rapidapi.com/search"
+    _HOST = "jsearch.p.rapidapi.com"
+    _PAGES = 2
+
+    def __init__(self, company_name: str, employer: str, api_key: str):
+        self.company_name = company_name
+        self.employer = employer
+        self.api_key = api_key
+
+    def fetch(self, preferences: dict) -> List[dict]:
+        global _jsearch_calls_today, _jsearch_date
+
+        if not self.api_key:
+            raise ValueError(
+                f"JSEARCH_API_KEY not set — cannot fetch {self.company_name}. "
+                "Set the JSEARCH_API_KEY environment variable."
+            )
+
+        today = _date_cls.today()
+        if _jsearch_date != today:
+            _jsearch_calls_today = 0
+            _jsearch_date = today
+
+        daily_limit = int(os.environ.get("JSEARCH_DAILY_LIMIT", "40"))
+        title_keywords = preferences.get("title_keywords", [])
+        query_kw = title_keywords[0] if title_keywords else "Engineering Manager"
+        query = f"{query_kw} at {self.employer}"
+        results = []
+
+        for page in range(1, self._PAGES + 1):
+            if _jsearch_calls_today >= daily_limit:
+                logger.warning(
+                    "JSearch daily limit (%d) reached — skipping %s page %d",
+                    daily_limit, self.company_name, page,
+                )
+                break
+
+            resp = requests.get(
+                self._BASE_URL,
+                headers={
+                    "X-RapidAPI-Key": self.api_key,
+                    "X-RapidAPI-Host": self._HOST,
+                },
+                params={"query": query, "page": page, "num_pages": 1, "date_posted": "month"},
+                timeout=30,
+            )
+            _jsearch_calls_today += 1
+
+            if resp.status_code != 200:
+                raise requests.HTTPError(
+                    f"JSearch API returned {resp.status_code} for {self.company_name}: {resp.text[:200]}"
+                )
+
+            data = resp.json().get("data") or []
+            if not data:
+                break
+
+            for item in data:
+                title = item.get("job_title", "")
+                if not _matches_title(title, preferences):
+                    continue
+                parts = [item.get("job_city", ""), item.get("job_state", ""), item.get("job_country", "")]
+                location = ", ".join(p for p in parts if p)
+                if not _matches_location(location, preferences):
+                    continue
+                results.append({
+                    "job_id": str(item.get("job_id", "")),
+                    "company": self.company_name,
+                    "title": title,
+                    "location": location,
+                    "url": item.get("job_apply_link") or item.get("job_google_link", ""),
+                    "apply_url": item.get("job_apply_link") or item.get("job_google_link", ""),
+                    "description": item.get("job_description", ""),
+                })
+
+        return results
+
+
 _FETCHER_MAP = {
     "greenhouse": GreenhouseFetcher,
     "ashby": AshbyFetcher,
@@ -1189,6 +1279,7 @@ _FETCHER_MAP = {
     "walmart": WalmartFetcher,
     "linkedin": LinkedInFetcher,
     "capitalone": CapitalOneFetcher,
+    "jsearch": JSearchFetcher,
 }
 
 _PLAYWRIGHT_ATS = {"google", "apple", "meta"}
@@ -1199,6 +1290,7 @@ def fetch_all_companies(
     preferences: dict,
     log=None,
     fetch_errors: Dict[str, Any] = None,
+    fetch_counts: Dict[str, int] = None,
 ) -> List[dict]:
     """Run all company fetchers and return aggregated job list.
 
@@ -1206,6 +1298,8 @@ def fetch_all_companies(
         companies_config: list of company dicts from companies.yaml
         preferences: dict from preferences.yaml
         fetch_errors: optional dict; populated with {company_name: error_msg} on failures
+        fetch_counts: optional dict; populated with {company_name: job_count} for every
+                      attempted company (0 for errors or genuine zero results)
 
     Output:
         list of normalized job dicts (see module docstring)
@@ -1232,6 +1326,10 @@ def fetch_all_companies(
             fetcher = fetcher_cls(board_slug=company["board_slug"], company_name=name)
         elif ats == "linkedin":
             fetcher = fetcher_cls(company_name=name, company_id=company.get("company_id", ""))
+        elif ats == "jsearch":
+            api_key = os.environ.get("JSEARCH_API_KEY", "")
+            fetcher = fetcher_cls(company_name=name, employer=company.get("employer", name),
+                                  api_key=api_key)
         else:
             fetcher = fetcher_cls(company_name=name)
         fetch_timeout = company.get("fetch_timeout", 60)
@@ -1262,6 +1360,8 @@ def fetch_all_companies(
         else:
             jobs = result_holder["jobs"]
             _log(f"  → {len(jobs)} matching jobs ({elapsed:.1f}s)")
+        if fetch_counts is not None:
+            fetch_counts[name] = len(jobs)
         all_jobs.extend(jobs)
 
     if playwright_companies:
@@ -1327,6 +1427,8 @@ def fetch_all_companies(
                             _log(f"  WARNING: {company_name}: {skip_msg}")
                             if fetch_errors is not None:
                                 fetch_errors[company_name] = skip_msg
+                    if fetch_counts is not None:
+                        fetch_counts[company_name] = len(jobs)
                     all_jobs.extend(jobs)
                 finally:
                     if page:

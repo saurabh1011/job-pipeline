@@ -107,6 +107,29 @@ class TestBuildAlertEmail:
         subject, body = build_summary_email([], [], empty_stats)
         assert "0" in subject
 
+    def test_zero_companies_appear_in_subject(self):
+        stats = {**SAMPLE_STATS, "zero_companies": ["Google", "Apple"]}
+        subject, _ = build_summary_email([], [], stats)
+        assert "2" in subject
+        assert "0 jobs" in subject
+
+    def test_zero_companies_sourcing_gaps_section_in_body(self):
+        stats = {**SAMPLE_STATS, "zero_companies": ["Google", "Meta"]}
+        _, body = build_summary_email([], [], stats)
+        assert "SOURCING GAPS" in body
+        assert "Google" in body
+        assert "Meta" in body
+
+    def test_no_sourcing_gaps_section_when_all_companies_return_jobs(self):
+        stats = {**SAMPLE_STATS, "zero_companies": []}
+        _, body = build_summary_email(SAMPLE_JOBS, SAMPLE_JOBS, stats)
+        assert "SOURCING GAPS" not in body
+
+    def test_zero_companies_not_in_subject_when_empty(self):
+        stats = {**SAMPLE_STATS, "zero_companies": []}
+        subject, _ = build_summary_email(SAMPLE_JOBS, SAMPLE_JOBS, stats)
+        assert "0 jobs" not in subject
+
 
 class TestGmailAlerter:
     @pytest.fixture
