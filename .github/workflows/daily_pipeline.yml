@@ -1,9 +1,8 @@
 name: Daily Pipeline Run
 
 on:
-  schedule:
-    - cron: '0 9 * * *'   # 5:00 AM ET (EDT = UTC-4); shifts to 4am in winter (EST = UTC-5)
-    - cron: '0 21 * * *'  # 5:00 PM ET (EDT = UTC-4); shifts to 4pm in winter
+  # Schedule disabled — per-user scheduling is now handled by APScheduler inside the app.
+  # Kept here for manual trigger if needed.
   workflow_dispatch:       # allow manual trigger from GitHub Actions UI
 
 jobs:
