@@ -16,6 +16,8 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 import secrets
+import smtplib
+import threading
 from urllib.parse import urlencode
 
 import httpx
@@ -477,6 +479,41 @@ def _resolve_companies(all_companies: list, group: Optional[str], company_filter
     if group == "http":
         return [c for c in all_companies if c.get("ats") not in _PLAYWRIGHT_ATS]
     return all_companies
+
+
+def _notify_new_user(user: dict):
+    """Send admin email when a new user signs in. Runs in a background thread."""
+    from datetime import datetime, timezone
+    from email.message import EmailMessage
+
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    alert_email = os.environ.get("ALERT_EMAIL")
+    if not (smtp_user and smtp_password and alert_email):
+        return
+
+    def _send():
+        try:
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            msg = EmailMessage()
+            msg["Subject"] = f"[Job Pipeline] New user: {user['name']} ({user['email']})"
+            msg["From"] = smtp_user
+            msg["To"] = alert_email
+            msg.set_content(
+                f"A new user has signed in to Job Pipeline.\n\n"
+                f"Name:    {user['name']}\n"
+                f"Email:   {user['email']}\n"
+                f"Admin:   {'yes' if user.get('is_admin') else 'no'}\n"
+                f"Time:    {ts}\n"
+            )
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+                s.login(smtp_user, smtp_password)
+                s.send_message(msg)
+            logger.info("New-user notification sent for %s", user["email"])
+        except Exception as exc:
+            logger.warning("Failed to send new-user notification: %s", exc)
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 def _send_pipeline_email(all_scored: list, alert_jobs: list, stats: dict):
@@ -1136,6 +1173,7 @@ async def auth_callback(
             _auth_db.add_allowed_email(email, added_by="bootstrap")
 
         user = _auth_db.create_user(google_id, email, name, is_admin=is_admin)
+        _notify_new_user(user)
 
     session_token = _auth_db.create_session(user["user_id"])
     prod = not OAUTH_REDIRECT_URI.startswith("http://localhost")

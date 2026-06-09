@@ -201,6 +201,62 @@ class TestOAuthCallback:
         assert "auth_error" in location
 
 
+# ── New-user email notification ───────────────────────────────────────────────
+
+class TestNewUserNotification:
+    def _call_callback(self, client, email, google_id, name="Test"):
+        adb.save_oauth_state("test-state")
+        with _fake_httpx_client(email, google_id, name):
+            return client.get(
+                "/api/auth/google/callback",
+                params={"code": "fake_code", "state": "test-state"},
+            )
+
+    def test_notification_sent_for_new_user(self, auth_setup, monkeypatch):
+        monkeypatch.setenv("SMTP_USER", "sender@gmail.com")
+        monkeypatch.setenv("SMTP_PASSWORD", "pass")
+        monkeypatch.setenv("ALERT_EMAIL", "admin@example.com")
+        with patch("web.server.smtplib.SMTP_SSL") as mock_ssl:
+            mock_ctx = MagicMock()
+            mock_ssl.return_value.__enter__ = MagicMock(return_value=mock_ctx)
+            mock_ssl.return_value.__exit__ = MagicMock(return_value=False)
+            self._call_callback(auth_setup, "newuser@example.com", "gid_nu")
+            import time; time.sleep(0.1)  # let daemon thread run
+        mock_ssl.assert_called_once()
+        msg = mock_ctx.send_message.call_args[0][0]
+        assert "newuser@example.com" in str(msg)
+
+    def test_notification_not_sent_for_existing_user(self, auth_setup, monkeypatch):
+        adb.create_user("gid_ret2", "returning@x.com", "Returning", is_admin=True)
+        monkeypatch.setenv("SMTP_USER", "sender@gmail.com")
+        monkeypatch.setenv("SMTP_PASSWORD", "pass")
+        monkeypatch.setenv("ALERT_EMAIL", "admin@example.com")
+        with patch("web.server.smtplib.SMTP_SSL") as mock_ssl:
+            mock_ctx = MagicMock()
+            mock_ssl.return_value.__enter__ = MagicMock(return_value=mock_ctx)
+            mock_ssl.return_value.__exit__ = MagicMock(return_value=False)
+            self._call_callback(auth_setup, "returning@x.com", "gid_ret2")
+            import time; time.sleep(0.1)
+        mock_ssl.assert_not_called()
+
+    def test_smtp_failure_does_not_block_login(self, auth_setup, monkeypatch):
+        monkeypatch.setenv("SMTP_USER", "sender@gmail.com")
+        monkeypatch.setenv("SMTP_PASSWORD", "pass")
+        monkeypatch.setenv("ALERT_EMAIL", "admin@example.com")
+        with patch("web.server.smtplib.SMTP_SSL", side_effect=Exception("SMTP down")):
+            r = self._call_callback(auth_setup, "newuser2@example.com", "gid_nu2")
+        assert r.status_code in (200, 302, 307)
+
+    def test_notification_skipped_when_smtp_not_configured(self, auth_setup, monkeypatch):
+        monkeypatch.delenv("SMTP_USER", raising=False)
+        monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+        monkeypatch.delenv("ALERT_EMAIL", raising=False)
+        with patch("web.server.smtplib.SMTP_SSL") as mock_ssl:
+            self._call_callback(auth_setup, "newuser3@example.com", "gid_nu3")
+            import time; time.sleep(0.1)
+        mock_ssl.assert_not_called()
+
+
 # ── Admin endpoints ───────────────────────────────────────────────────────────
 
 class TestAdminEndpoints:
