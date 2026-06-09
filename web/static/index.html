@@ -181,10 +181,11 @@
           <div id="detect-result" style="display:none">
             <div id="detect-status" class="detect-status"></div>
             <div class="add-company-form" style="margin-top:8px">
-              <select id="new-ats" class="settings-select">
+              <select id="new-ats" class="settings-select" onchange="App.onNewAtsChange()">
                 <option value="greenhouse">Greenhouse</option>
                 <option value="ashby">Ashby</option>
                 <option value="lever">Lever</option>
+                <option value="jsearch">JSearch</option>
                 <option value="google">Google (custom)</option>
                 <option value="apple">Apple (custom)</option>
                 <option value="meta">Meta (custom)</option>
@@ -197,6 +198,7 @@
                 <option value="linkedin">LinkedIn (custom)</option>
               </select>
               <input id="new-slug" class="settings-input" placeholder="board_slug (if needed)">
+              <input id="new-employer" class="settings-input" placeholder="Employer name (for JSearch)" style="display:none">
             </div>
             <button class="btn-success btn-sm" style="margin-top:8px;width:100%" onclick="App.addCompany()">Add Company</button>
           </div>

@@ -125,6 +125,7 @@ JSEARCH_RESPONSE_PAGE1 = {
         {
             "job_id": "js_001",
             "job_title": "Engineering Manager, Ads",
+            "employer_name": "Apple",
             "job_city": "New York",
             "job_state": "NY",
             "job_country": "US",
@@ -134,11 +135,22 @@ JSEARCH_RESPONSE_PAGE1 = {
         {
             "job_id": "js_002",
             "job_title": "Software Engineer",  # filtered by title
+            "employer_name": "Apple",
             "job_city": "Remote",
             "job_state": "",
             "job_country": "US",
             "job_apply_link": "https://jobs.apple.com/002",
             "job_description": "Build backend services.",
+        },
+        {
+            "job_id": "js_003",
+            "job_title": "Engineering Manager, Platform",
+            "employer_name": "Roblox",  # wrong employer — should be filtered out
+            "job_city": "San Mateo",
+            "job_state": "CA",
+            "job_country": "US",
+            "job_apply_link": "https://careers.roblox.com/003",
+            "job_description": "Lead platform teams.",
         },
     ]
 }
@@ -180,10 +192,20 @@ class TestJSearchFetcher:
         for field in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
             assert field in job
 
-    def test_raises_when_api_key_missing(self):
+    def test_returns_empty_when_api_key_missing(self):
         fetcher = JSearchFetcher("Apple", "Apple", "")
-        with pytest.raises(ValueError, match="JSEARCH_API_KEY"):
-            fetcher.fetch(PREFERENCES)
+        jobs = fetcher.fetch(PREFERENCES)
+        assert jobs == []
+
+    def test_filters_by_employer_name(self):
+        fetcher = JSearchFetcher("Apple", "Apple", "test_key")
+        mock_resp = self._mock_get([JSEARCH_RESPONSE_PAGE1, JSEARCH_EMPTY])
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            jobs = fetcher.fetch(PREFERENCES)
+        employers = {j["company"] for j in jobs}
+        assert employers == {"Apple"}
+        job_ids = {j["job_id"] for j in jobs}
+        assert "js_003" not in job_ids  # Roblox job filtered out
 
     def test_raises_on_non_200_response(self):
         fetcher = JSearchFetcher("Apple", "Apple", "test_key")
@@ -242,9 +264,9 @@ class TestFetchAllCompaniesWithCounts:
         assert "Acme" in fetch_counts
         assert fetch_counts["Acme"] == 0
 
-    def test_errored_company_in_fetch_errors_not_zero_companies(self):
-        # JSearchFetcher raises ValueError for missing API key — this propagates
-        # through the thread to fetch_errors, not into zero_companies
+    def test_jsearch_missing_key_returns_zero_not_error(self):
+        # Missing API key now returns [] gracefully — company lands in fetch_counts
+        # with 0 results, not in fetch_errors
         companies = [{"name": "Google", "ats": "jsearch", "employer": "Google"}]
         prefs = PREFERENCES.copy()
         fetch_errors = {}
@@ -255,9 +277,8 @@ class TestFetchAllCompaniesWithCounts:
             fetch_all_companies(companies, prefs,
                                 fetch_errors=fetch_errors,
                                 fetch_counts=fetch_counts)
-        assert "Google" in fetch_errors
-        zero_companies = [n for n, c in fetch_counts.items() if c == 0 and n not in fetch_errors]
-        assert "Google" not in zero_companies
+        assert "Google" not in fetch_errors
+        assert fetch_counts.get("Google") == 0
 
 
 # ── Title Filter Logic ────────────────────────────────────────────────────────

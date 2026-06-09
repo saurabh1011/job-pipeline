@@ -764,6 +764,12 @@ class CompanyAddRequest(BaseModel):
     board_slug: Optional[str] = None
     department: Optional[str] = None
     company_id: Optional[str] = None
+    employer: Optional[str] = None
+
+
+class CompanySourceRequest(BaseModel):
+    ats: str
+    employer: Optional[str] = None
 
 
 @app.post("/api/companies/detect")
@@ -798,9 +804,34 @@ def settings_add_company(
         entry["department"] = body.department
     if body.company_id:
         entry["company_id"] = body.company_id
+    if body.employer:
+        entry["employer"] = body.employer
     companies.append(entry)
     _write_companies_cfg(companies, paths.config_dir)
     return {"ok": True, "company": entry}
+
+
+@app.patch("/api/settings/companies/{name}/source")
+def settings_update_company_source(
+    name: str,
+    body: CompanySourceRequest,
+    user: dict = Depends(require_api_key),
+    paths: ProfilePaths = Depends(get_profile_paths),
+):
+    """Update the sourcing method (ATS) for an existing company. Admin only."""
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin only")
+    companies = _read_companies_cfg(paths.config_dir)
+    for company in companies:
+        if company["name"] == name:
+            company["ats"] = body.ats
+            if body.employer is not None:
+                company["employer"] = body.employer
+            elif "employer" in company and body.ats != "jsearch":
+                del company["employer"]
+            _write_companies_cfg(companies, paths.config_dir)
+            return {"ok": True, "company": company}
+    raise HTTPException(status_code=404, detail=f"'{name}' not found")
 
 
 @app.delete("/api/settings/companies/{name}")

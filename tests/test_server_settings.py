@@ -202,6 +202,49 @@ class TestSettingsRemoveCompany:
         assert "GlobalTech" in names
 
 
+# ── PATCH /api/settings/companies/{name}/source ──────────────────────────────
+
+class TestUpdateCompanySource:
+    def test_update_ats_returns_ok(self, client):
+        r = client.patch("/api/settings/companies/Acme Corp/source",
+                         json={"ats": "jsearch", "employer": "Acme"})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+
+    def test_updated_ats_persisted_to_yaml(self, client, cfg_dir):
+        client.patch("/api/settings/companies/Acme Corp/source",
+                     json={"ats": "jsearch", "employer": "Acme Corporation"})
+        with open(cfg_dir / "companies.yaml") as f:
+            data = yaml.safe_load(f)
+        acme = next(c for c in data["companies"] if c["name"] == "Acme Corp")
+        assert acme["ats"] == "jsearch"
+        assert acme["employer"] == "Acme Corporation"
+
+    def test_employer_field_removed_when_switching_away_from_jsearch(self, client, cfg_dir):
+        client.patch("/api/settings/companies/Acme Corp/source",
+                     json={"ats": "jsearch", "employer": "Acme"})
+        client.patch("/api/settings/companies/Acme Corp/source",
+                     json={"ats": "greenhouse"})
+        with open(cfg_dir / "companies.yaml") as f:
+            data = yaml.safe_load(f)
+        acme = next(c for c in data["companies"] if c["name"] == "Acme Corp")
+        assert acme["ats"] == "greenhouse"
+        assert "employer" not in acme
+
+    def test_nonexistent_company_returns_404(self, client):
+        r = client.patch("/api/settings/companies/NoSuchCo/source",
+                         json={"ats": "jsearch"})
+        assert r.status_code == 404
+
+    def test_non_admin_returns_403(self, client, monkeypatch):
+        from web import auth as auth_module
+        non_admin = {"user_id": "u1", "email": "u@x.com", "name": "U", "is_admin": False}
+        monkeypatch.setattr(auth_module, "_DEV_USER", non_admin)
+        r = client.patch("/api/settings/companies/Acme Corp/source",
+                         json={"ats": "jsearch"})
+        assert r.status_code == 403
+
+
 # ── GET /api/settings/preferences ────────────────────────────────────────────
 
 class TestSettingsGetPreferences:

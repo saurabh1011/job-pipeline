@@ -591,8 +591,17 @@ const App = (() => {
   const _ATS_LABELS = {
     greenhouse: "GH", ashby: "AS", lever: "LV", google: "GO", apple: "AP",
     meta: "ME", microsoft: "MS", uber: "UB", walmart: "WM", netflix: "NF",
-    zillow: "ZI", amazon: "AZ", linkedin: "LI",
+    zillow: "ZI", amazon: "AZ", linkedin: "LI", jsearch: "JS",
   };
+
+  const _ATS_OPTIONS = [
+    ["greenhouse", "Greenhouse"], ["ashby", "Ashby"], ["lever", "Lever"],
+    ["jsearch", "JSearch"],
+    ["google", "Google (custom)"], ["apple", "Apple (custom)"], ["meta", "Meta (custom)"],
+    ["microsoft", "Microsoft (custom)"], ["uber", "Uber (custom)"],
+    ["walmart", "Walmart (custom)"], ["netflix", "Netflix (custom)"],
+    ["zillow", "Zillow (custom)"], ["amazon", "Amazon (custom)"], ["linkedin", "LinkedIn (custom)"],
+  ];
 
   const _CHIP_FIELDS = [
     "title_keywords", "title_exclude_keywords",
@@ -822,18 +831,56 @@ const App = (() => {
       list.innerHTML = '<div class="settings-empty">No companies configured.</div>';
       return;
     }
+    const isAdmin = _currentUser && _currentUser.is_admin;
     list.innerHTML = _settingsCompanies.map((c, i) => {
       const badge = _ATS_LABELS[c.ats] || c.ats.slice(0, 2).toUpperCase();
+      const atsOpts = _ATS_OPTIONS.map(([val, label]) =>
+        `<option value="${val}"${c.ats === val ? " selected" : ""}>${_esc(label)}</option>`
+      ).join("");
+      const sourceControls = isAdmin ? `
+        <div class="company-source-row">
+          <select class="settings-select settings-select--sm" onchange="App.onCompanyAtsChange(this,${i})">
+            ${atsOpts}
+          </select>
+          <input class="settings-input settings-input--sm" placeholder="Employer (JSearch)"
+            value="${_esc(c.employer || "")}"
+            style="${c.ats === "jsearch" ? "" : "display:none"}"
+            data-employer-idx="${i}">
+          <button class="btn-primary btn-sm" onclick="App.updateCompanySource(${i})">Save</button>
+        </div>` : "";
       return `
         <div class="settings-company-row">
           <span class="ats-badge">${_esc(badge)}</span>
           <div class="company-info">
             <span class="company-name-text">${_esc(c.name)}</span>
             ${c.board_slug ? `<span class="company-slug">${_esc(c.board_slug)}</span>` : ""}
+            ${sourceControls}
           </div>
           <button class="btn-danger btn-sm" onclick="App.removeCompany(${i})">Remove</button>
         </div>`;
     }).join("");
+  }
+
+  function onCompanyAtsChange(selectEl, idx) {
+    const row = selectEl.closest(".settings-company-row");
+    const employerInput = row.querySelector(`[data-employer-idx="${idx}"]`);
+    if (employerInput) employerInput.style.display = selectEl.value === "jsearch" ? "" : "none";
+  }
+
+  async function updateCompanySource(idx) {
+    const company = _settingsCompanies[idx];
+    const row = document.querySelectorAll(".settings-company-row")[idx];
+    const ats = row.querySelector("select").value;
+    const employerInput = row.querySelector(`[data-employer-idx="${idx}"]`);
+    const employer = employerInput ? employerInput.value.trim() : "";
+    try {
+      const updated = await _api("PATCH", `/api/settings/companies/${encodeURIComponent(company.name)}/source`,
+        { ats, employer: employer || null });
+      _settingsCompanies[idx] = updated.company;
+      _renderSettingsCompanies();
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
   async function removeCompany(idx) {
@@ -877,13 +924,21 @@ const App = (() => {
     }
   }
 
+  function onNewAtsChange() {
+    const ats = document.getElementById("new-ats").value;
+    const employerEl = document.getElementById("new-employer");
+    if (employerEl) employerEl.style.display = ats === "jsearch" ? "" : "none";
+  }
+
   async function addCompany() {
-    const name = document.getElementById("new-company-name").value.trim();
-    const ats  = document.getElementById("new-ats").value;
-    const slug = document.getElementById("new-slug").value.trim();
+    const name     = document.getElementById("new-company-name").value.trim();
+    const ats      = document.getElementById("new-ats").value;
+    const slug     = document.getElementById("new-slug").value.trim();
+    const employer = document.getElementById("new-employer").value.trim();
     if (!name || !ats) { alert("Name and ATS are required."); return; }
     try {
-      await _api("POST", "/api/settings/companies", { name, ats, board_slug: slug || null });
+      await _api("POST", "/api/settings/companies",
+        { name, ats, board_slug: slug || null, employer: employer || null });
       document.getElementById("new-company-name").value = "";
       document.getElementById("new-slug").value = "";
       document.getElementById("detect-result").style.display = "none";
@@ -1410,7 +1465,7 @@ const App = (() => {
            closeDrawer,
            toggleSelectMode, toggleCheck, clearSelection, bulkStatus,
            switchView, openSettings, closeSettings, settingsTab,
-           removeCompany, detectAts, addCompany,
+           removeCompany, detectAts, addCompany, onNewAtsChange, onCompanyAtsChange, updateCompanySource,
            removeChip, chipKeydown, savePreferences,
            _loadRunsTab,
            loadLogFile, closeLogFile,
