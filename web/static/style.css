@@ -204,6 +204,9 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .company-info { flex: 1; min-width: 0; }
 .company-name-text { font-size: 13px; font-weight: 500; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .company-slug { font-size: 11px; color: var(--text-muted); font-family: var(--mono); }
+.company-source-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.settings-select--sm { font-size: 12px; padding: 3px 6px; }
+.settings-input--sm { font-size: 12px; padding: 3px 6px; flex: 1; }
 .settings-empty { font-size: 13px; color: var(--text-muted); padding: 8px 0; }
 
 /* Add company form */

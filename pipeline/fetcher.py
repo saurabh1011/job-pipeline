@@ -1202,10 +1202,8 @@ class JSearchFetcher:
         global _jsearch_calls_today, _jsearch_date
 
         if not self.api_key:
-            raise ValueError(
-                f"JSEARCH_API_KEY not set — cannot fetch {self.company_name}. "
-                "Set the JSEARCH_API_KEY environment variable."
-            )
+            logger.warning("JSEARCH_API_KEY not set — skipping %s", self.company_name)
+            return []
 
         today = _date_cls.today()
         if _jsearch_date != today:
@@ -1247,6 +1245,8 @@ class JSearchFetcher:
                 break
 
             for item in data:
+                if self.employer.lower() not in item.get("employer_name", "").lower():
+                    continue
                 title = item.get("job_title", "")
                 if not _matches_title(title, preferences):
                     continue
