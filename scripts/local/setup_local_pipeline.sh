@@ -46,10 +46,13 @@ else
   umask 077
   {
     echo "APP_MODE=local"
-    echo "GEMINI_API_KEY=$GEMINI_API_KEY"
-    echo "SMTP_USER=$SMTP_USER"
-    echo "SMTP_PASSWORD=$SMTP_PASSWORD"
-    echo "ALERT_EMAIL=$ALERT_EMAIL"
+    # %q shell-quotes each value so values containing spaces or special
+    # characters (e.g. a Gmail app password like "abcd efgh ijkl mnop")
+    # survive being `source`d intact instead of being word-split.
+    printf 'GEMINI_API_KEY=%q\n' "$GEMINI_API_KEY"
+    printf 'SMTP_USER=%q\n' "$SMTP_USER"
+    printf 'SMTP_PASSWORD=%q\n' "$SMTP_PASSWORD"
+    printf 'ALERT_EMAIL=%q\n' "$ALERT_EMAIL"
   } > "$REPO_ROOT/.env.local"
   echo "→ wrote .env.local"
 fi
