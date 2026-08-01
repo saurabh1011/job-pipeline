@@ -33,5 +33,9 @@ venv/
 *.key
 config/preferences.yaml
 
+# Nested git worktree used to run the local server independent of whatever
+# branch is checked out in the main working tree (see scripts/local/)
+.worktrees/
+
 # macOS
 .DS_Store
