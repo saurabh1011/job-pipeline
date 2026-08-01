@@ -114,3 +114,29 @@ class TestScheduleEndpoints:
             cookies={"session_token": token},
         )
         assert r.status_code == 404
+
+    def test_reload_scheduler_noop_in_local_mode(self, auth_setup, monkeypatch):
+        """APP_MODE=local installs are cron-driven; the in-process APScheduler
+        must stay inert even when a schedule is set, to avoid duplicate runs."""
+        monkeypatch.setattr(server_module, "APP_MODE", "local")
+        token, uid = _make_session("local-mode@x.com")
+        p = self._make_profile(uid)
+        auth_setup.put(
+            f"/api/profiles/{p['profile_id']}/schedule",
+            json={"time_1": "09:00", "time_2": "18:00", "enabled": True},
+            cookies={"session_token": token},
+        )
+        assert server_module._scheduler.get_jobs() == []
+
+    def test_reload_scheduler_schedules_job_in_remote_mode(self, auth_setup):
+        assert server_module.APP_MODE == "remote"
+        token, uid = _make_session("remote-mode@x.com")
+        p = self._make_profile(uid)
+        auth_setup.put(
+            f"/api/profiles/{p['profile_id']}/schedule",
+            json={"time_1": "09:00", "time_2": "18:00", "enabled": True},
+            cookies={"session_token": token},
+        )
+        job_ids = {j.id for j in server_module._scheduler.get_jobs()}
+        assert f"{p['profile_id']}_time_1" in job_ids
+        assert f"{p['profile_id']}_time_2" in job_ids

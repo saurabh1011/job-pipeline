@@ -10,6 +10,7 @@ primary_region = 'ewr'
   dockerfile = 'Dockerfile'
 
 [env]
+  APP_MODE = 'remote'
   CONFIG_DIR = '/data/config'
   DB_PATH = '/data/jobs.db'
   LOG_DIR = '/data/logs'

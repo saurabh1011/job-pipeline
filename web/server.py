@@ -36,6 +36,7 @@ from web.auth import require_admin, require_api_key  # noqa: E402
 from web.tasks import create_task, get_task           # noqa: E402
 from pipeline.store import JobStore, JobStatus        # noqa: E402
 
+APP_MODE   = os.environ.get("APP_MODE",     "remote")  # "remote" (Fly.io) or "local" (Mac, cron-driven)
 DB_PATH    = os.environ.get("DB_PATH",      str(ROOT / "jobs.db"))
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR",   str(ROOT / "output"))
 CONFIG_DIR = os.environ.get("CONFIG_DIR",   str(ROOT / "config"))
@@ -99,8 +100,13 @@ def _scheduler_run_profile(profile_id: str):
 
 
 def _reload_scheduler():
-    """Sync APScheduler jobs from the schedules DB table."""
-    if _scheduler is None:
+    """Sync APScheduler jobs from the schedules DB table.
+
+    No-ops when APP_MODE=local: local installs are driven by an external
+    cron trigger (see scripts/local/) hitting /api/pipeline/run directly,
+    so the in-process scheduler must stay inert to avoid duplicate runs.
+    """
+    if _scheduler is None or APP_MODE == "local":
         return
     _scheduler.remove_all_jobs()
     for sched in _auth_db.list_all_schedules():
@@ -133,9 +139,11 @@ _startup_store._conn.execute(
 _startup_store._conn.commit()
 _startup_store.close()
 
-if _scheduler is not None:
+if _scheduler is not None and APP_MODE != "local":
     _reload_scheduler()
     _scheduler.start()
+elif APP_MODE == "local":
+    logger.info("APP_MODE=local — internal scheduler disabled; runs are triggered externally (cron)")
 
 
 # ── Profile path resolution ───────────────────────────────────────────────────
