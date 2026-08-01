@@ -29,7 +29,7 @@ build/
 venv/
 
 # Secrets (never commit)
-.env
+.env*
 *.key
 config/preferences.yaml
 

@@ -94,6 +94,41 @@ curl -X POST http://localhost:8080/api/pipeline/run -d '{"mode":"http"}'
 
 ```
 
+### Running locally on a schedule (avoiding IP blocks)
+
+The deployed app (`job-pipeline.fly.dev`) fetches from a shared Fly.io IP,
+which some job boards block. Running the pipeline from your own machine
+instead sends requests from your home IP.
+
+```bash
+export GEMINI_API_KEY=...   # or ANTHROPIC_API_KEY / OPENAI_API_KEY, matching config/preferences.yaml
+export SMTP_USER=...
+export SMTP_PASSWORD=...
+export ALERT_EMAIL=...
+
+./scripts/local/setup_local_pipeline.sh
+```
+
+This installs:
+- A launchd LaunchAgent (`com.jobpipeline.local-server`) that keeps
+  `uvicorn web.server:app` running at `http://localhost:8000`, restarting on
+  crash/reboot, so the web UI is always available to manage runs.
+- Two crontab entries (8am / 6pm) that trigger a run via
+  `POST http://localhost:8000/api/pipeline/run`, the same call the old
+  GitHub Actions workflow made against the remote server.
+
+Secrets are written once to `.env.local` (gitignored) and sourced by
+`scripts/local/run_server.sh`. The script is safe to re-run.
+
+`.env.local` also sets `APP_MODE=local`, which disables the server's
+in-process APScheduler (used for per-profile schedules when deployed on
+Fly.io) so it can't fire a duplicate run alongside the cron trigger. The
+deployed app sets `APP_MODE=remote` (`fly.toml`), the default if unset.
+
+If you also had a per-profile schedule configured on the deployed app,
+clear it from the Schedule tab there so it isn't still running (and
+getting blocked) from the remote IP.
+
 ## Configuration
 
 ### `config/companies.yaml`
