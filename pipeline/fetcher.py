@@ -138,22 +138,35 @@ class GreenhouseFetcher:
 class GoogleFetcher:
     """Fetches Engineering Manager roles from Google Careers.
 
-    Google does not use Greenhouse. This fetcher calls the Google Careers
-    JSON API used by their careers website.
+    Like jobs.apple.com, the search results page is server-rendered: job
+    data is embedded in a `AF_initDataCallback({key: 'ds:1', ..., data:
+    [...]})` script block (Google's standard SSR data-embedding mechanism)
+    as a JSON-compatible array — no browser/JS execution needed to read it.
+
+    Each job entry is a positional array (not a dict); the indices used
+    here were determined by inspecting a live response and matter more
+    than they look — see _JOB_FIELD_* constants.
     """
 
-    _SEARCH_URL = "https://careers.google.com/api/jobs/jobs-v1/search/"
+    _SEARCH_URL = "https://www.google.com/about/careers/applications/jobs/results/"
+    _MAX_PAGES = 10
+
+    # Index into each job's raw array (Google ships this undocumented/positional).
+    _JOB_FIELD_ID = 0
+    _JOB_FIELD_TITLE = 1
+    _JOB_FIELD_RESPONSIBILITIES = 3   # [null, html] — bullet list, no header
+    _JOB_FIELD_QUALIFICATIONS = 4     # [null, html] — has its own "Minimum/Preferred qualifications" headers
+    _JOB_FIELD_LOCATIONS = 9          # [[full_location_str, [address], city, zip, state, country], ...]
+    _JOB_FIELD_ABOUT = 10             # [null, html] — "about the job" narrative
 
     def __init__(self, company_name: str = "Google"):
         self.company_name = company_name
 
     def fetch(self, preferences: dict) -> List[dict]:
         results = []
-        # Fetch for each title keyword to maximize coverage
         seen_ids: set = set()
         for keyword in preferences.get("title_keywords", ["Engineering Manager"]):
-            jobs = self._fetch_keyword(keyword, preferences)
-            for job in jobs:
+            for job in self._fetch_keyword(keyword, preferences):
                 if job["job_id"] not in seen_ids:
                     seen_ids.add(job["job_id"])
                     results.append(job)
@@ -161,42 +174,107 @@ class GoogleFetcher:
         return results
 
     def _fetch_keyword(self, keyword: str, preferences: dict) -> List[dict]:
-        params = {
-            "q": keyword,
-            "hl": "en_US",
-            "sort_by": "date",
-        }
-        try:
-            resp = requests.get(self._SEARCH_URL, params=params, timeout=15)
-            resp.raise_for_status()
-        except Exception as exc:
-            logger.warning("Google fetch failed for keyword '%s': %s", keyword, exc)
+        results = []
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)"}
+        for page_num in range(1, self._MAX_PAGES + 1):
+            params = {"q": keyword, "location": "United States"}
+            if page_num > 1:
+                params["page"] = page_num
+            try:
+                resp = requests.get(self._SEARCH_URL, params=params, headers=headers, timeout=20)
+                resp.raise_for_status()
+                jobs_raw = self._extract_search_results(resp.text)
+            except Exception as exc:
+                logger.warning("Google fetch failed for keyword '%s' page %d: %s", keyword, page_num, exc)
+                break
+
+            if not jobs_raw:
+                break
+
+            for job in jobs_raw:
+                title = self._field(job, self._JOB_FIELD_TITLE) or ""
+                if not _matches_title(title, preferences):
+                    continue
+                job_id = str(self._field(job, self._JOB_FIELD_ID) or "")
+                if not job_id:
+                    continue
+                raw_locations = self._field(job, self._JOB_FIELD_LOCATIONS) or []
+                location_str = ", ".join(
+                    loc[0] for loc in raw_locations if loc and loc[0]
+                )
+                if not _matches_location(location_str, preferences):
+                    logger.debug("Google excluded by location: %s — %s", title, location_str)
+                    continue
+                url = f"https://www.google.com/about/careers/applications/jobs/results/{job_id}"
+                description_html = "".join(
+                    self._field_html(job, idx) for idx in (
+                        self._JOB_FIELD_ABOUT,
+                        self._JOB_FIELD_RESPONSIBILITIES,
+                        self._JOB_FIELD_QUALIFICATIONS,
+                    )
+                )
+                results.append({
+                    "job_id": job_id,
+                    "company": self.company_name,
+                    "title": title,
+                    "location": location_str,
+                    "url": url,
+                    "apply_url": url,
+                    "description": _strip_html(description_html),
+                })
+        return results
+
+    @staticmethod
+    def _field(job: list, idx: int):
+        return job[idx] if idx < len(job) else None
+
+    @classmethod
+    def _field_html(cls, job: list, idx: int) -> str:
+        val = cls._field(job, idx)
+        return val[1] if isinstance(val, list) and len(val) > 1 and val[1] else ""
+
+    @staticmethod
+    def _extract_search_results(html: str) -> List[list]:
+        """Pull the job array out of the `key: 'ds:1'` AF_initDataCallback block."""
+        anchor = html.find("key: 'ds:1'")
+        if anchor == -1:
+            return []
+        start = html.find("data:[", anchor)
+        if start == -1:
+            return []
+        start += len("data:")
+
+        depth = 0
+        in_str = False
+        esc = False
+        end = None
+        for i in range(start, len(html)):
+            c = html[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                continue
+            if c == '"':
+                in_str = True
+            elif c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end is None:
             return []
 
-        data = resp.json()
-        jobs_raw = data.get("jobs", [])
-        results = []
-        for job in jobs_raw:
-            title = job.get("title", "")
-            if not _matches_title(title, preferences):
-                continue
-            locations = job.get("locations", [])
-            location_str = ", ".join(locations) if locations else ""
-            if not _matches_location(location_str, preferences):
-                logger.debug("Excluded by location: %s — %s", title, location_str)
-                continue
-            job_id = str(job.get("job_id", job.get("id", "")))
-            apply_url = f"https://careers.google.com/jobs/results/{job_id}"
-            results.append({
-                "job_id": job_id,
-                "company": self.company_name,
-                "title": title,
-                "location": location_str,
-                "url": apply_url,
-                "apply_url": apply_url,
-                "description": _strip_html(job.get("description", "")),
-            })
-        return results
+        try:
+            data = json.loads(html[start:end])
+        except json.JSONDecodeError:
+            return []
+        return data[0] if data and isinstance(data[0], list) else []
 
 
 class WalmartFetcher:
@@ -1301,9 +1379,10 @@ _FETCHER_MAP = {
     "capitalone": CapitalOneFetcher,
     "jsearch": JSearchFetcher,
     "apple": AppleFetcher,
+    "google": GoogleFetcher,
 }
 
-_PLAYWRIGHT_ATS = {"google", "meta"}
+_PLAYWRIGHT_ATS = {"meta"}
 
 
 def fetch_all_companies(

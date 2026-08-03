@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 from datetime import date
 from pipeline.fetcher import (
     GreenhouseFetcher, UberFetcher, MicrosoftFetcher, WalmartFetcher,
-    CapitalOneFetcher, JSearchFetcher, AppleFetcher,
+    CapitalOneFetcher, JSearchFetcher, AppleFetcher, GoogleFetcher,
     fetch_all_companies, _matches_location, _build_company_prefs,
 )
 import pipeline.fetcher as fetcher_mod
@@ -1342,3 +1342,149 @@ class TestAppleFetcher:
             AppleFetcher().fetch(APPLE_PREFS)
         params = mock_get.call_args.kwargs["params"]
         assert params["search"] == '"Engineering Manager"'
+
+
+# ── Google Fetcher ────────────────────────────────────────────────────────────
+
+GOOGLE_PREFS = {
+    "title_keywords": ["Engineering Manager"],
+    "title_exclude_keywords": ["Software Engineer", "Product Manager"],
+}
+
+
+def _google_job(job_id="82388667623973574", title="Engineering Manager, Network Management",
+                 location_name="Sunnyvale, CA, USA", about="About the role.",
+                 responsibilities="<ul><li>Lead a team.</li></ul>",
+                 qualifications="<h3>Minimum qualifications:</h3><ul><li>BA/BS.</li></ul>"):
+    """Build a job entry matching Google's positional (non-dict) array schema."""
+    job = [None] * 11
+    job[0] = job_id
+    job[1] = title
+    job[3] = [None, responsibilities]
+    job[4] = [None, qualifications]
+    job[9] = [[location_name, [location_name], "", "", "", "US"]] if location_name else []
+    job[10] = [None, about]
+    return job
+
+
+def _google_search_html(jobs, total=None):
+    """Build a fake Google careers search page embedding the AF_initDataCallback
+    payload the way the real page does: `key: 'ds:1', ..., data: [...]`."""
+    payload = [jobs, None, total if total is not None else len(jobs), 20]
+    return (
+        "<html><body><script>"
+        f"AF_initDataCallback({{key: 'ds:1', hash: '2', data:{json.dumps(payload)}, sideChannel: {{}}}});"
+        "</script></body></html>"
+    )
+
+
+class TestGoogleFetcher:
+    def test_filters_by_title(self):
+        jobs = [_google_job(job_id="1", title="Engineering Manager, Network Management"),
+                _google_job(job_id="2", title="Software Engineer, iOS")]
+        mock_resp = MagicMock()
+        mock_resp.text = _google_search_html(jobs)
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            result = GoogleFetcher().fetch(GOOGLE_PREFS)
+        titles = [j["title"] for j in result]
+        assert "Engineering Manager, Network Management" in titles
+        assert "Software Engineer, iOS" not in titles
+
+    def test_returns_normalized_job_dict(self):
+        mock_resp = MagicMock()
+        mock_resp.text = _google_search_html([_google_job(job_id="XYZ")])
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            jobs = GoogleFetcher().fetch(GOOGLE_PREFS)
+        assert len(jobs) == 1
+        job = jobs[0]
+        for key in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
+            assert key in job
+        assert job["company"] == "Google"
+        assert job["job_id"] == "XYZ"
+        assert job["url"] == "https://www.google.com/about/careers/applications/jobs/results/XYZ"
+        assert job["location"] == "Sunnyvale, CA, USA"
+
+    def test_description_combines_about_responsibilities_and_qualifications(self):
+        mock_resp = MagicMock()
+        mock_resp.text = _google_search_html([_google_job(
+            about="About the role text.",
+            responsibilities="<ul><li>Lead a team.</li></ul>",
+            qualifications="<h3>Minimum qualifications:</h3><ul><li>BA/BS.</li></ul>",
+        )])
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            jobs = GoogleFetcher().fetch(GOOGLE_PREFS)
+        desc = jobs[0]["description"]
+        assert "About the role text." in desc
+        assert "Lead a team." in desc
+        assert "Minimum qualifications:" in desc
+        assert "BA/BS." in desc
+        assert "<" not in desc
+
+    def test_filters_by_location(self):
+        jobs = [_google_job(job_id="1", location_name="San Francisco, CA, USA")]
+        prefs = {**GOOGLE_PREFS, "excluded_location_keywords": ["San Francisco"]}
+        mock_resp = MagicMock()
+        mock_resp.text = _google_search_html(jobs)
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            result = GoogleFetcher().fetch(prefs)
+        assert result == []
+
+    def test_deduplicates_across_keywords(self):
+        prefs = {**GOOGLE_PREFS, "title_keywords": ["Engineering Manager", "Manager, Engineering"]}
+        job = _google_job(job_id="dup1")
+        mock_resp = MagicMock()
+        mock_resp.text = _google_search_html([job])
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            jobs = GoogleFetcher().fetch(prefs)
+        assert len(jobs) == 1
+
+    def test_returns_empty_on_network_error(self):
+        with patch("pipeline.fetcher.requests.get", side_effect=Exception("Connection refused")):
+            jobs = GoogleFetcher().fetch(GOOGLE_PREFS)
+        assert jobs == []
+
+    def test_returns_empty_when_hydration_payload_missing(self):
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><body>no results</body></html>"
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            jobs = GoogleFetcher().fetch(GOOGLE_PREFS)
+        assert jobs == []
+
+    def test_stops_pagination_when_empty_page(self):
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            m = MagicMock()
+            m.raise_for_status = MagicMock()
+            m.text = (_google_search_html([_google_job(job_id=str(call_count))])
+                      if call_count == 1 else _google_search_html([]))
+            return m
+
+        with patch("pipeline.fetcher.requests.get", side_effect=side_effect):
+            jobs = GoogleFetcher().fetch(GOOGLE_PREFS)
+        assert call_count == 2
+        assert len(jobs) == 1
+
+    def test_page_param_only_added_on_subsequent_pages(self):
+        call_params = []
+
+        def side_effect(*args, **kwargs):
+            call_params.append(kwargs["params"])
+            m = MagicMock()
+            m.raise_for_status = MagicMock()
+            m.text = (_google_search_html([_google_job(job_id=str(len(call_params)))])
+                      if len(call_params) == 1 else _google_search_html([]))
+            return m
+
+        with patch("pipeline.fetcher.requests.get", side_effect=side_effect):
+            GoogleFetcher().fetch(GOOGLE_PREFS)
+        assert "page" not in call_params[0]
+        assert call_params[1]["page"] == 2
