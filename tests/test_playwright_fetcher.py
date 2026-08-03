@@ -11,7 +11,6 @@ import time
 
 from pipeline.playwright_fetcher import (
     GooglePlaywrightFetcher,
-    ApplePlaywrightFetcher,
     MetaPlaywrightFetcher,
     MicrosoftPlaywrightFetcher,
     _PLAYWRIGHT_FETCHER_MAP,
@@ -136,82 +135,6 @@ class TestGooglePlaywrightFetcher:
         page.goto.side_effect = Exception("Timeout")
         fetcher = GooglePlaywrightFetcher()
         assert fetcher._get_description(page, "https://example.com") == ""
-
-
-# ── ApplePlaywrightFetcher ─────────────────────────────────────────────────────
-
-def _apple_api_response(jobs):
-    """Build a mock Apple API response for the given job dicts."""
-    return {
-        "res": {
-            "searchResults": [
-                {
-                    "id": j["id"],
-                    "postingTitle": j["title"],
-                    "locations": [{"name": j["location"]}],
-                }
-                for j in jobs
-            ],
-            "totalRecords": len(jobs),
-        }
-    }
-
-
-def _mock_apple_post(jobs):
-    """Return a side_effect for requests.post: jobs on first call, empty on subsequent."""
-    calls = [0]
-    def side_effect(*args, **kwargs):
-        calls[0] += 1
-        m = MagicMock()
-        m.ok = True
-        m.status_code = 200
-        m.json.return_value = _apple_api_response(jobs) if calls[0] == 1 else {"res": {"searchResults": []}}
-        return m
-    return side_effect
-
-
-class TestApplePlaywrightFetcher:
-    def test_filters_by_title(self):
-        api_jobs = [
-            {"id": "100", "title": "Engineering Manager, Siri", "location": "New York, NY"},
-            {"id": "200", "title": "Software Engineer, iOS", "location": "Cupertino, CA"},
-        ]
-        page = _mock_page()
-        fetcher = ApplePlaywrightFetcher()
-        with patch("pipeline.playwright_fetcher.requests.post", side_effect=_mock_apple_post(api_jobs)):
-            with patch.object(fetcher, "_get_description", return_value=""):
-                jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
-        assert len(jobs) == 1
-        assert jobs[0]["title"] == "Engineering Manager, Siri"
-
-    def test_extracts_job_id(self):
-        api_jobs = [{"id": "ABC123", "title": "Engineering Manager, Maps", "location": "Seattle, WA"}]
-        page = _mock_page()
-        fetcher = ApplePlaywrightFetcher()
-        with patch("pipeline.playwright_fetcher.requests.post", side_effect=_mock_apple_post(api_jobs)):
-            with patch.object(fetcher, "_get_description", return_value=""):
-                jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
-        assert jobs[0]["job_id"] == "ABC123"
-
-    def test_returns_empty_on_api_failure(self):
-        page = _mock_page()
-        fetcher = ApplePlaywrightFetcher()
-        with patch("pipeline.playwright_fetcher.requests.post", side_effect=Exception("Connection error")):
-            jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
-        assert jobs == []
-
-    def test_returns_normalized_job_dict(self):
-        api_jobs = [{"id": "XYZ", "title": "Engineering Manager, AI", "location": "Remote"}]
-        page = _mock_page()
-        fetcher = ApplePlaywrightFetcher()
-        with patch("pipeline.playwright_fetcher.requests.post", side_effect=_mock_apple_post(api_jobs)):
-            with patch.object(fetcher, "_get_description", return_value="jd"):
-                jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page)
-        job = jobs[0]
-        for key in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
-            assert key in job
-        assert job["company"] == "Apple"
-        assert job["url"] == "https://jobs.apple.com/en-us/details/XYZ"
 
 
 # ── MetaPlaywrightFetcher ──────────────────────────────────────────────────────
@@ -503,26 +426,6 @@ class TestDescriptionTimeoutIntegration:
 
         assert len(timed_out) == 1
 
-    def test_apple_fetch_propagates_timed_out_urls(self, monkeypatch):
-        """Apple fetch() threads timed_out_urls through to _get_description_safe."""
-        monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 0.1)
-
-        page = _mock_page()
-        single_kw_prefs = {**PREFERENCES, "title_keywords": ["Engineering Manager"]}
-
-        def hanging_get_description(pg, url):
-            time.sleep(5)
-            return ""
-
-        api_jobs = [{"id": "abc123", "title": "Engineering Manager, Siri", "location": "New York, NY"}]
-        fetcher = ApplePlaywrightFetcher()
-        timed_out = []
-        with patch("pipeline.playwright_fetcher.requests.post", side_effect=_mock_apple_post(api_jobs)):
-            with patch.object(fetcher, "_get_description", side_effect=hanging_get_description):
-                fetcher.fetch(single_kw_prefs, page, timed_out_urls=timed_out)
-
-        assert len(timed_out) == 1
-
     def test_meta_extract_jobs_propagates_timed_out_urls(self, monkeypatch):
         """Meta _extract_jobs threads timed_out_urls through to _get_description_safe."""
         monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 0.1)
@@ -550,7 +453,6 @@ class TestDescriptionTimeoutIntegration:
 class TestPlaywrightFetcherMap:
     @pytest.mark.parametrize("ats_key,expected_cls", [
         ("google", GooglePlaywrightFetcher),
-        ("apple", ApplePlaywrightFetcher),
         ("meta", MetaPlaywrightFetcher),
     ])
     def test_map_contains_all_fetchers(self, ats_key, expected_cls):

@@ -184,124 +184,6 @@ class GooglePlaywrightFetcher:
             return ""
 
 
-class ApplePlaywrightFetcher:
-    """Fetches EM roles from jobs.apple.com (SSR + client hydration).
-
-    Apple's keyword search (`q=`) returns all teams, so title filtering is
-    applied client-side. Description is fetched from each detail page.
-    """
-
-    _SEARCH = "https://jobs.apple.com/en-us/search"
-    _MAX_PAGES = 5
-
-    def __init__(self, company_name: str = "Apple"):
-        self.company_name = company_name
-
-    def fetch(self, preferences: dict, page: Page, log=None, timed_out_urls=None) -> List[dict]:
-        _log = log or (lambda m: logger.info(m))
-        results = []
-        seen: set = set()
-        for kw in preferences.get("title_keywords", ["Engineering Manager"]):
-            for job in self._fetch_keyword(kw, preferences, page, log=_log, timed_out_urls=timed_out_urls):
-                if job["job_id"] not in seen:
-                    seen.add(job["job_id"])
-                    results.append(job)
-        _log(f"  Apple: {len(results)} matching jobs found")
-        logger.info("Apple: %d matching jobs found", len(results))
-        return results
-
-    _API_URL = "https://jobs.apple.com/api/v1/search"
-
-    def _fetch_keyword(self, keyword: str, preferences: dict, page: Page, log=None, timed_out_urls=None) -> List[dict]:
-        candidates = []
-        seen_ids: set = set()
-
-        for page_num in range(1, self._MAX_PAGES + 1):
-            try:
-                resp = requests.post(
-                    self._API_URL,
-                    json={
-                        "query": "",
-                        "filters": {"keywords": [keyword], "locations": ["postLocation-USA"]},
-                        "page": page_num,
-                        "locale": "en-us",
-                        "sort": "",
-                    },
-                    headers={
-                        "Content-Type": "application/json",
-                        "Referer": "https://jobs.apple.com/en-us/search",
-                        "Origin": "https://jobs.apple.com",
-                        "User-Agent": _UA,
-                    },
-                    timeout=30,
-                )
-                if not resp.ok:
-                    logger.warning("Apple API status %d for '%s' page %d — possible IP block",
-                                   resp.status_code, keyword, page_num)
-                    if log:
-                        log(f"  Apple: API status={resp.status_code} for '{keyword}' page {page_num}")
-                    break
-                data = resp.json()
-            except Exception as exc:
-                logger.warning("Apple API search failed for '%s' page %d: %s", keyword, page_num, exc)
-                if log:
-                    log(f"  Apple: API exception for '{keyword}' page {page_num}: {exc}")
-                break
-
-            search_results = data.get("res", {}).get("searchResults", [])
-            if log:
-                log(f"  Apple: '{keyword}' page {page_num}: {len(search_results)} results")
-            if not search_results:
-                break
-
-            for job in search_results:
-                job_id = job.get("id", "")
-                if not job_id or job_id in seen_ids:
-                    continue
-                title = job.get("postingTitle", "")
-                if not _matches_title(title, preferences):
-                    continue
-                location = ", ".join(
-                    loc.get("name", "") for loc in job.get("locations", [])
-                )
-                if not _matches_location(location, preferences):
-                    logger.debug("Apple excluded by location: %s — %s", title, location)
-                    continue
-                seen_ids.add(job_id)
-                candidates.append({
-                    "job_id": job_id,
-                    "title": title,
-                    "location": location,
-                    "url": f"https://jobs.apple.com/en-us/details/{job_id}",
-                })
-
-        results = []
-        for c in candidates:
-            desc = _get_description_safe(self._get_description, page, c["url"], log=log, timed_out_urls=timed_out_urls)
-            results.append({
-                "job_id": c["job_id"],
-                "company": self.company_name,
-                "title": c["title"],
-                "location": c["location"],
-                "url": c["url"],
-                "apply_url": c["url"],
-                "description": desc,
-            })
-        return results
-
-    def _get_description(self, page: Page, url: str) -> str:
-        try:
-            page.goto(url, timeout=30000)
-            page.wait_for_timeout(2000)
-            el = (page.query_selector(".job-description")
-                  or page.query_selector("[class*='description']")
-                  or page.query_selector("main"))
-            return el.inner_text().strip() if el else ""
-        except Exception as exc:
-            logger.warning("Apple description fetch failed for %s: %s", url, exc)
-            return ""
-
-
 class MetaPlaywrightFetcher:
     """Fetches EM roles from metacareers.com (React SPA)."""
 
@@ -491,7 +373,6 @@ class MicrosoftPlaywrightFetcher:
 
 _PLAYWRIGHT_FETCHER_MAP = {
     "google": GooglePlaywrightFetcher,
-    "apple": ApplePlaywrightFetcher,
     "meta": MetaPlaywrightFetcher,
 }
 

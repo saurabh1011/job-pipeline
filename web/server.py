@@ -474,7 +474,7 @@ def update_cover_letter(
 
 # ── Pipeline actions ──────────────────────────────────────────────────────────
 
-_PLAYWRIGHT_ATS = {"google", "apple", "meta"}
+_PLAYWRIGHT_ATS = {"google", "meta"}
 
 
 def _resolve_companies(all_companies: list, group: Optional[str], company_filter: Optional[List[str]]) -> list:

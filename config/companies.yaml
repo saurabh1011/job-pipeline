@@ -4,17 +4,19 @@
 companies:
 
   # ── JSearch (RapidAPI) — requires JSEARCH_API_KEY env var ──────────────────
+  # Google/Meta: Playwright gets net::ERR_ABORTED even from a local (non-Fly) IP —
+  # looks like headless-browser detection, not IP blocking. Revisit separately.
   - name: Google
     ats: jsearch
     employer: "Google"
 
-  - name: Apple
-    ats: jsearch
-    employer: "Apple"
-
   - name: Meta
     ats: jsearch
     employer: "Meta"
+
+  # ── Playwright-based (React/SPA sites) ─────────────────────────────────────
+  - name: Apple
+    ats: apple
 
   - name: Microsoft
     ats: microsoft

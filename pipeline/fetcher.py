@@ -12,6 +12,7 @@ Each fetcher.fetch(preferences) returns a list of normalized job dicts:
     }
 """
 import copy
+import json
 import logging
 import os
 import re
@@ -269,12 +270,19 @@ class WalmartFetcher:
 
 
 class AppleFetcher:
-    """Fetches Engineering Manager roles from Apple Careers.
+    """Fetches Engineering Manager roles from jobs.apple.com.
 
-    Apple uses their own jobs.apple.com platform with a REST search API.
+    The site is server-rendered: a plain GET of the search results page
+    embeds the results as JSON inside a `window.__staticRouterHydrationData
+    = JSON.parse("...")` script tag (a React Router SSR loader payload) —
+    no browser/JS execution needed to read it. Quoting the keyword (e.g.
+    `"Engineering Manager"`) narrows Apple's search from a broad
+    any-word-matches scan (thousands of unrelated retail/ops roles) down to
+    close phrase matches.
     """
 
-    _SEARCH_URL = "https://jobs.apple.com/api/role/search"
+    _SEARCH_URL = "https://jobs.apple.com/en-us/search"
+    _MAX_PAGES = 10
 
     def __init__(self, company_name: str = "Apple"):
         self.company_name = company_name
@@ -283,8 +291,7 @@ class AppleFetcher:
         results = []
         seen_ids: set = set()
         for keyword in preferences.get("title_keywords", ["Engineering Manager"]):
-            jobs = self._fetch_keyword(keyword, preferences)
-            for job in jobs:
+            for job in self._fetch_keyword(keyword, preferences):
                 if job["job_id"] not in seen_ids:
                     seen_ids.add(job["job_id"])
                     results.append(job)
@@ -292,46 +299,59 @@ class AppleFetcher:
         return results
 
     def _fetch_keyword(self, keyword: str, preferences: dict) -> List[dict]:
-        params = {
-            "query": keyword,
-            "filters.locationList.countryAreaList.country": "USA",
-            "page": 0,
-            "size": 50,
-        }
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)"}
-        try:
-            resp = requests.get(
-                self._SEARCH_URL, params=params, headers=headers, timeout=15
-            )
-            resp.raise_for_status()
-        except Exception as exc:
-            logger.warning("Apple fetch failed for keyword '%s': %s", keyword, exc)
-            return []
-
-        data = resp.json()
-        jobs_raw = data.get("searchResults", [])
         results = []
-        for job in jobs_raw:
-            title = job.get("postingTitle", "")
-            if not _matches_title(title, preferences):
-                continue
-            job_id = str(job.get("positionId", ""))
-            locations = job.get("locations", [])
-            location_str = ", ".join(loc.get("name", "") for loc in locations) if locations else ""
-            if not _matches_location(location_str, preferences):
-                logger.debug("Excluded by location: %s — %s", title, location_str)
-                continue
-            url = job.get("jobUrl", f"https://jobs.apple.com/en-us/details/{job_id}")
-            results.append({
-                "job_id": job_id,
-                "company": self.company_name,
-                "title": title,
-                "location": location_str,
-                "url": url,
-                "apply_url": url,
-                "description": _strip_html(job.get("jobSummary", "")),
-            })
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)"}
+        for page_num in range(1, self._MAX_PAGES + 1):
+            params = {"search": f'"{keyword}"', "sort": "newest", "page": page_num}
+            try:
+                resp = requests.get(self._SEARCH_URL, params=params, headers=headers, timeout=20)
+                resp.raise_for_status()
+                jobs_raw = self._extract_search_results(resp.text)
+            except Exception as exc:
+                logger.warning("Apple fetch failed for keyword '%s' page %d: %s", keyword, page_num, exc)
+                break
+
+            if not jobs_raw:
+                break
+
+            for job in jobs_raw:
+                title = job.get("postingTitle", "")
+                if not _matches_title(title, preferences):
+                    continue
+                job_id = str(job.get("positionId", ""))
+                if not job_id:
+                    continue
+                locations = job.get("locations", [])
+                location_str = ", ".join(loc.get("name", "") for loc in locations if loc.get("name"))
+                if not _matches_location(location_str, preferences):
+                    logger.debug("Apple excluded by location: %s — %s", title, location_str)
+                    continue
+                url = f"https://jobs.apple.com/en-us/details/{job_id}"
+                results.append({
+                    "job_id": job_id,
+                    "company": self.company_name,
+                    "title": title,
+                    "location": location_str,
+                    "url": url,
+                    "apply_url": url,
+                    "description": job.get("jobSummary", "").strip(),
+                })
         return results
+
+    @staticmethod
+    def _extract_search_results(html: str) -> List[dict]:
+        """Pull loaderData.search.searchResults out of the embedded SSR payload.
+
+        The page embeds `window.__staticRouterHydrationData = JSON.parse("...")`
+        where the JSON.parse argument is itself a JSON-escaped string (double
+        encoding), so it needs unescaping before the outer JSON can be parsed.
+        """
+        m = re.search(r'__staticRouterHydrationData\s*=\s*JSON\.parse\("((?:[^"\\]|\\.)*)"\)', html)
+        if not m:
+            return []
+        inner_json_text = json.loads('"' + m.group(1) + '"')
+        data = json.loads(inner_json_text)
+        return data.get("loaderData", {}).get("search", {}).get("searchResults", []) or []
 
 
 class AshbyFetcher:
@@ -1280,9 +1300,10 @@ _FETCHER_MAP = {
     "linkedin": LinkedInFetcher,
     "capitalone": CapitalOneFetcher,
     "jsearch": JSearchFetcher,
+    "apple": AppleFetcher,
 }
 
-_PLAYWRIGHT_ATS = {"google", "apple", "meta"}
+_PLAYWRIGHT_ATS = {"google", "meta"}
 
 
 def fetch_all_companies(
