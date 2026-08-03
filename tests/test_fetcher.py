@@ -1,11 +1,12 @@
 """Unit tests for job fetchers."""
+import json
 import time
 import pytest
 from unittest.mock import patch, MagicMock
 from datetime import date
 from pipeline.fetcher import (
     GreenhouseFetcher, UberFetcher, MicrosoftFetcher, WalmartFetcher,
-    CapitalOneFetcher, JSearchFetcher,
+    CapitalOneFetcher, JSearchFetcher, AppleFetcher,
     fetch_all_companies, _matches_location, _build_company_prefs,
 )
 import pipeline.fetcher as fetcher_mod
@@ -1217,3 +1218,127 @@ class TestCapitalOneFetcherIntegration:
         co_jobs = [j for j in jobs if j["company"] == "Capital One"]
         assert len(co_jobs) == 1
         assert co_jobs[0]["job_id"] == "123456001"
+
+
+# ── Apple Fetcher ─────────────────────────────────────────────────────────────
+
+APPLE_PREFS = {
+    "title_keywords": ["Engineering Manager"],
+    "title_exclude_keywords": ["Software Engineer", "Product Manager"],
+}
+
+
+def _apple_job(position_id="200313970", title="Engineering Manager, Siri",
+               location_name="New York", job_summary="Lead a team building Siri."):
+    return {
+        "id": f"PIPE-{position_id}",
+        "positionId": position_id,
+        "postingTitle": title,
+        "postingDate": "Aug 03, 2026",
+        "jobSummary": job_summary,
+        "locations": [{"name": location_name}] if location_name else [],
+    }
+
+
+def _apple_search_html(jobs):
+    """Build a fake Apple search-results page embedding the SSR hydration payload
+    the way React Router actually renders it: JSON.parse() of a JSON-encoded string."""
+    data = {"loaderData": {"search": {"searchResults": jobs}}}
+    inner_json_text = json.dumps(data)
+    js_string_literal = json.dumps(inner_json_text)
+    return (
+        "<html><body><script>"
+        f"window.__staticRouterHydrationData = JSON.parse({js_string_literal});"
+        "</script></body></html>"
+    )
+
+
+class TestAppleFetcher:
+    def test_filters_by_title(self):
+        jobs = [_apple_job(position_id="1", title="Engineering Manager, Siri"),
+                _apple_job(position_id="2", title="Software Engineer, iOS")]
+        mock_resp = MagicMock()
+        mock_resp.text = _apple_search_html(jobs)
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            result = AppleFetcher().fetch(APPLE_PREFS)
+        titles = [j["title"] for j in result]
+        assert "Engineering Manager, Siri" in titles
+        assert "Software Engineer, iOS" not in titles
+
+    def test_returns_normalized_job_dict(self):
+        mock_resp = MagicMock()
+        mock_resp.text = _apple_search_html([_apple_job(position_id="XYZ")])
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            jobs = AppleFetcher().fetch(APPLE_PREFS)
+        assert len(jobs) == 1
+        job = jobs[0]
+        for key in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
+            assert key in job
+        assert job["company"] == "Apple"
+        assert job["job_id"] == "XYZ"
+        assert job["url"] == "https://jobs.apple.com/en-us/details/XYZ"
+        assert job["location"] == "New York"
+        assert job["description"] == "Lead a team building Siri."
+
+    def test_filters_by_location(self):
+        jobs = [_apple_job(position_id="1", location_name="San Francisco, CA")]
+        prefs = {**APPLE_PREFS, "excluded_location_keywords": ["San Francisco"]}
+        mock_resp = MagicMock()
+        mock_resp.text = _apple_search_html(jobs)
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            result = AppleFetcher().fetch(prefs)
+        assert result == []
+
+    def test_deduplicates_across_keywords(self):
+        prefs = {**APPLE_PREFS, "title_keywords": ["Engineering Manager", "Manager, Engineering"]}
+        job = _apple_job(position_id="dup1")
+        mock_resp = MagicMock()
+        mock_resp.text = _apple_search_html([job])
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            jobs = AppleFetcher().fetch(prefs)
+        assert len(jobs) == 1
+
+    def test_returns_empty_on_network_error(self):
+        with patch("pipeline.fetcher.requests.get", side_effect=Exception("Connection refused")):
+            jobs = AppleFetcher().fetch(APPLE_PREFS)
+        assert jobs == []
+
+    def test_returns_empty_when_hydration_payload_missing(self):
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><body>no results</body></html>"
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            jobs = AppleFetcher().fetch(APPLE_PREFS)
+        assert jobs == []
+
+    def test_stops_pagination_when_empty_page(self):
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            m = MagicMock()
+            m.raise_for_status = MagicMock()
+            m.text = (_apple_search_html([_apple_job(position_id=str(call_count))])
+                      if call_count == 1 else _apple_search_html([]))
+            return m
+
+        with patch("pipeline.fetcher.requests.get", side_effect=side_effect):
+            jobs = AppleFetcher().fetch(APPLE_PREFS)
+        assert call_count == 2
+        assert len(jobs) == 1
+
+    def test_quotes_keyword_in_search_param(self):
+        """Apple's raw keyword search is a broad any-word match across thousands
+        of unrelated roles; quoting narrows it to close phrase matches."""
+        mock_resp = MagicMock()
+        mock_resp.text = _apple_search_html([])
+        mock_resp.raise_for_status = MagicMock()
+        with patch("pipeline.fetcher.requests.get", return_value=mock_resp) as mock_get:
+            AppleFetcher().fetch(APPLE_PREFS)
+        params = mock_get.call_args.kwargs["params"]
+        assert params["search"] == '"Engineering Manager"'
