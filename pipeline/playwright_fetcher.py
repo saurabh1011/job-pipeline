@@ -18,20 +18,13 @@ import re
 import threading
 from typing import List
 
-import requests
 from playwright.sync_api import Page
 
 from pipeline.fetcher import _matches_title, _matches_location, _strip_html
 
 logger = logging.getLogger(__name__)
 
-_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
-
 _DESCRIPTION_TIMEOUT_S = 55
-_MAX_DESCRIPTIONS_PER_KEYWORD = 50
 
 
 def _get_description_safe(fetch_fn, page, url, log=None, timed_out_urls=None):
@@ -68,120 +61,6 @@ def _get_description_safe(fetch_fn, page, url, log=None, timed_out_urls=None):
     if timed_out_urls is not None:
         timed_out_urls.append(url)
     return ""
-
-
-class GooglePlaywrightFetcher:
-    """Fetches EM roles from careers.google.com (React SPA)."""
-
-    _SEARCH = "https://www.google.com/about/careers/applications/jobs/results/"
-
-    def __init__(self, company_name: str = "Google"):
-        self.company_name = company_name
-
-    def fetch(self, preferences: dict, page: Page, log=None, timed_out_urls=None) -> List[dict]:
-        _log = log or (lambda msg: logger.info(msg))
-        results = []
-        seen: set = set()
-        keywords = preferences.get("title_keywords", ["Engineering Manager"])
-        for i, kw in enumerate(keywords, 1):
-            _log(f"Google: keyword {i}/{len(keywords)} — '{kw}'")
-            for job in self._fetch_keyword(kw, preferences, page, _log, seen, timed_out_urls=timed_out_urls):
-                seen.add(job["job_id"])
-                results.append(job)
-        _log(f"Google: {len(results)} total unique jobs found")
-        return results
-
-    _MAX_PAGES = 5
-    _BASE = "https://www.google.com/about/careers/applications/"
-
-    def _fetch_keyword(self, keyword: str, preferences: dict, page: Page, log, seen: set, timed_out_urls=None) -> List[dict]:
-        q = keyword.replace(' ', '+')
-        candidates = []
-
-        for page_num in range(1, self._MAX_PAGES + 1):
-            url = f"{self._SEARCH}?q={q}&location=United+States"
-            if page_num > 1:
-                url += f"&page={page_num}"
-            log(f"  Loading page {page_num}...")
-            try:
-                page.goto(url, timeout=45000)
-                page.wait_for_timeout(5000)
-            except Exception as exc:
-                log(f"  Page {page_num} timed out: {exc}")
-                break
-
-            cards = page.query_selector_all(".sMn82b")
-            if not cards:
-                log(f"  Page {page_num}: no cards, stopping")
-                break
-
-            page_candidates = []
-            for card in cards:
-                title_el = card.query_selector("h3.QJPWVe")
-                if not title_el:
-                    continue
-                title = title_el.inner_text().strip()
-                if not _matches_title(title, preferences):
-                    continue
-
-                location_el = card.query_selector("span.r0wTof")
-                location = location_el.inner_text().strip() if location_el else ""
-                if not _matches_location(location, preferences):
-                    continue
-
-                link_el = card.query_selector("a[href*='jobs/results/']")
-                href = (link_el.get_attribute("href") or "").split("?")[0] if link_el else ""
-                job_id_match = re.search(r"(\d{15,})", href)
-                job_id = job_id_match.group(1) if job_id_match else ""
-                if not job_id or job_id in seen:
-                    continue
-                job_url = self._BASE + href if href and not href.startswith("http") else href
-                page_candidates.append({"job_id": job_id, "title": title,
-                                        "location": location, "url": job_url})
-
-            candidates.extend(page_candidates)
-            log(f"  Page {page_num}: {len(cards)} cards, {len(page_candidates)} new")
-
-            if len(cards) < 20 or len(page_candidates) == 0:
-                break
-
-        to_fetch = candidates[:_MAX_DESCRIPTIONS_PER_KEYWORD]
-        if len(candidates) > _MAX_DESCRIPTIONS_PER_KEYWORD:
-            log(f"  Capping at {_MAX_DESCRIPTIONS_PER_KEYWORD} descriptions ({len(candidates)} new jobs found)")
-        log(f"  Fetching descriptions for {len(to_fetch)} new jobs...")
-        results = []
-        for i, c in enumerate(to_fetch, 1):
-            if i > 1:
-                try:
-                    page.wait_for_timeout(3000)
-                except Exception:
-                    pass
-            log(f"  Description {i}/{len(to_fetch)}: {c['title'][:50]}")
-            desc = _get_description_safe(self._get_description, page, c["url"], log=log, timed_out_urls=timed_out_urls)
-            results.append({
-                "job_id": c["job_id"],
-                "company": self.company_name,
-                "title": c["title"],
-                "location": c["location"],
-                "url": c["url"],
-                "apply_url": c["url"],
-                "description": desc,
-            })
-        return results
-
-    def _get_description(self, page: Page, url: str) -> str:
-        try:
-            page.goto(url, timeout=45000)
-            page.wait_for_timeout(4000)
-            parts = []
-            for sel in [".aG5W3", ".KwJkGe", ".BDNOWe"]:
-                el = page.query_selector(sel)
-                if el:
-                    parts.append(el.inner_text().strip())
-            return "\n\n".join(parts)
-        except Exception as exc:
-            logger.warning("Google description fetch failed for %s: %s", url, exc)
-            return ""
 
 
 class MetaPlaywrightFetcher:
@@ -372,7 +251,6 @@ class MicrosoftPlaywrightFetcher:
 
 
 _PLAYWRIGHT_FETCHER_MAP = {
-    "google": GooglePlaywrightFetcher,
     "meta": MetaPlaywrightFetcher,
 }
 

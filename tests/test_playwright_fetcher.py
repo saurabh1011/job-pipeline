@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch, call
 import time
 
 from pipeline.playwright_fetcher import (
-    GooglePlaywrightFetcher,
     MetaPlaywrightFetcher,
     MicrosoftPlaywrightFetcher,
     _PLAYWRIGHT_FETCHER_MAP,
@@ -27,16 +26,6 @@ PREFERENCES = {
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _el(text="", href=None, attribute=None):
-    """Build a minimal mock Playwright element handle."""
-    el = MagicMock()
-    el.inner_text.return_value = text
-    el.get_attribute.return_value = href if attribute is None else attribute
-    el.query_selector.return_value = None
-    el.query_selector_all.return_value = []
-    return el
-
-
 def _mock_page(goto=None, evaluate=None, query_selector=None, query_selector_all=None):
     page = MagicMock()
     page.goto.return_value = None
@@ -49,92 +38,6 @@ def _mock_page(goto=None, evaluate=None, query_selector=None, query_selector_all
     if query_selector_all is not None:
         page.query_selector_all.side_effect = query_selector_all
     return page
-
-
-# ── GooglePlaywrightFetcher ────────────────────────────────────────────────────
-
-class TestGooglePlaywrightFetcher:
-    def _make_card(self, job_id, title, location, href):
-        card = MagicMock()
-        card.get_attribute.return_value = f"Aiqs8c;{job_id};$2"
-        title_el = _el(title)
-        location_el = _el(location)
-        link_el = _el(href=href)
-        def qs(selector):
-            if "h3" in selector:
-                return title_el
-            if "r0wTof" in selector:
-                return location_el
-            if "jobs/results" in selector:
-                return link_el
-            return None
-        card.query_selector.side_effect = qs
-        return card
-
-    def test_extracts_matching_jobs(self):
-        card1 = self._make_card("134620137398379206", "Engineering Manager, Ads", "New York, NY, USA",
-                                "jobs/results/134620137398379206-engineering-manager-ads")
-        card2 = self._make_card("103210984117543622", "Software Engineer, Backend", "San Francisco, CA",
-                                "jobs/results/103210984117543622-software-engineer")
-        page = _mock_page()
-        page.query_selector_all.return_value = [card1, card2]
-
-        fetcher = GooglePlaywrightFetcher()
-        with patch.object(fetcher, "_get_description", return_value="desc"):
-            jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page, lambda x: None, set())
-
-        assert len(jobs) == 1
-        assert jobs[0]["title"] == "Engineering Manager, Ads"
-        assert jobs[0]["job_id"] == "134620137398379206"
-
-    def test_skips_cards_without_jsdata_job_id(self):
-        card = MagicMock()
-        card.get_attribute.return_value = "other;notanid;$0"
-        card.query_selector.return_value = None
-        page = _mock_page()
-        page.query_selector_all.return_value = [card]
-        fetcher = GooglePlaywrightFetcher()
-        jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page, lambda x: None, set())
-        assert jobs == []
-
-    def test_returns_normalized_job_dict(self):
-        card = self._make_card("131416680206082758", "Director of Engineering, Platform", "Remote",
-                               "jobs/results/131416680206082758-director-of-engineering")
-        page = _mock_page()
-        page.query_selector_all.return_value = [card]
-        fetcher = GooglePlaywrightFetcher()
-        with patch.object(fetcher, "_get_description", return_value="full jd"):
-            jobs = fetcher._fetch_keyword("Director of Engineering", PREFERENCES, page, lambda x: None, set())
-        assert len(jobs) == 1
-        job = jobs[0]
-        for key in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
-            assert key in job
-        assert job["company"] == "Google"
-        assert job["description"] == "full jd"
-
-    def test_deduplicates_across_keywords(self):
-        card = self._make_card("112567344349225670", "Engineering Manager, Ads", "New York, NY, USA",
-                               "jobs/results/112567344349225670-engineering-manager-ads")
-        page = _mock_page()
-        page.query_selector_all.return_value = [card]
-        fetcher = GooglePlaywrightFetcher()
-        with patch.object(fetcher, "_get_description", return_value=""):
-            jobs = fetcher.fetch(PREFERENCES, page)
-        ids = [j["job_id"] for j in jobs]
-        assert ids.count("112567344349225670") == 1
-
-    def test_returns_empty_on_page_load_failure(self):
-        page = _mock_page()
-        page.goto.side_effect = Exception("Timeout")
-        fetcher = GooglePlaywrightFetcher()
-        jobs = fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page, lambda x: None, set())
-        assert jobs == []
-
-    def test_get_description_returns_empty_on_error(self):
-        page = _mock_page()
-        page.goto.side_effect = Exception("Timeout")
-        fetcher = GooglePlaywrightFetcher()
-        assert fetcher._get_description(page, "https://example.com") == ""
 
 
 # ── MetaPlaywrightFetcher ──────────────────────────────────────────────────────
@@ -322,109 +225,10 @@ class TestGetDescriptionSafe:
         assert logged == []
 
 
-class TestGoogleDescriptionCap:
-    def _make_card(self, idx, title="Engineering Manager, Ads"):
-        # Job IDs must be 15+ digit numbers (Google's ID format)
-        job_id = f"{100000000000000 + idx}"
-        card = MagicMock()
-        title_el = _el(title)
-        location_el = _el("New York, NY, USA")
-        link_el = _el(href=f"jobs/results/{job_id}-engineering-manager")
-        def qs(selector):
-            if "h3" in selector: return title_el
-            if "r0wTof" in selector: return location_el
-            if "jobs/results" in selector: return link_el
-            return None
-        card.query_selector.side_effect = qs
-        return card
-
-    def test_caps_at_max_descriptions(self, monkeypatch):
-        monkeypatch.setattr(pf_module, "_MAX_DESCRIPTIONS_PER_KEYWORD", 3)
-        # 20 cards triggers pagination break (< 20 cards → break), so use exactly 20
-        cards = [self._make_card(i) for i in range(20)]
-        page = _mock_page()
-        page.query_selector_all.return_value = cards
-        fetcher = GooglePlaywrightFetcher()
-        desc_calls = []
-        def fake_desc_safe(fn, p, url, **kwargs):
-            desc_calls.append(url)
-            return "desc"
-        with patch.object(pf_module, "_get_description_safe", side_effect=fake_desc_safe):
-            fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page, lambda x: None, set())
-        assert len(desc_calls) == 3
-
-    def test_all_descriptions_fetched_when_under_cap(self, monkeypatch):
-        monkeypatch.setattr(pf_module, "_MAX_DESCRIPTIONS_PER_KEYWORD", 50)
-        cards = [self._make_card(i) for i in range(5)]
-        page = _mock_page()
-        page.query_selector_all.return_value = cards
-        fetcher = GooglePlaywrightFetcher()
-        desc_calls = []
-        def fake_desc_safe(fn, p, url, **kwargs):
-            desc_calls.append(url)
-            return "desc"
-        with patch.object(pf_module, "_get_description_safe", side_effect=fake_desc_safe):
-            fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page, lambda x: None, set())
-        assert len(desc_calls) == 5
-
-
 # ── Integration: log + timed_out_urls threading through fetchers ──────────────
 
 class TestDescriptionTimeoutIntegration:
     """Verify log and timed_out_urls flow end-to-end through each fetcher."""
-
-    def _make_google_card(self, idx, title="Engineering Manager, Ads"):
-        job_id = f"{100000000000000 + idx}"
-        card = MagicMock()
-        title_el = _el(title)
-        location_el = _el("New York, NY, USA")
-        link_el = _el(href=f"jobs/results/{job_id}-engineering-manager")
-        def qs(selector):
-            if "h3" in selector: return title_el
-            if "r0wTof" in selector: return location_el
-            if "jobs/results" in selector: return link_el
-            return None
-        card.query_selector.side_effect = qs
-        return card
-
-    def test_google_fetch_keyword_passes_log_and_timed_out_urls(self, monkeypatch):
-        """_fetch_keyword forwards log and timed_out_urls to _get_description_safe."""
-        monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 0.1)
-        cards = [self._make_google_card(0)]
-        page = _mock_page()
-        page.query_selector_all.return_value = cards
-
-        def hanging_get_description(pg, url):
-            time.sleep(5)
-            return ""
-
-        fetcher = GooglePlaywrightFetcher()
-        logged = []
-        timed_out = []
-        with patch.object(fetcher, "_get_description", side_effect=hanging_get_description):
-            fetcher._fetch_keyword("Engineering Manager", PREFERENCES, page,
-                                   logged.append, set(), timed_out_urls=timed_out)
-
-        assert len(timed_out) == 1
-        assert any("SKIPPED" in m for m in logged)
-
-    def test_google_fetch_propagates_timed_out_urls_to_caller(self, monkeypatch):
-        """fetch() returns with timed_out_urls populated when a description hangs."""
-        monkeypatch.setattr(pf_module, "_DESCRIPTION_TIMEOUT_S", 0.1)
-        cards = [self._make_google_card(0)]
-        page = _mock_page()
-        page.query_selector_all.return_value = cards
-
-        def hanging_get_description(pg, url):
-            time.sleep(5)
-            return ""
-
-        fetcher = GooglePlaywrightFetcher()
-        timed_out = []
-        with patch.object(fetcher, "_get_description", side_effect=hanging_get_description):
-            fetcher.fetch(PREFERENCES, page, log=lambda x: None, timed_out_urls=timed_out)
-
-        assert len(timed_out) == 1
 
     def test_meta_extract_jobs_propagates_timed_out_urls(self, monkeypatch):
         """Meta _extract_jobs threads timed_out_urls through to _get_description_safe."""
@@ -452,7 +256,6 @@ class TestDescriptionTimeoutIntegration:
 
 class TestPlaywrightFetcherMap:
     @pytest.mark.parametrize("ats_key,expected_cls", [
-        ("google", GooglePlaywrightFetcher),
         ("meta", MetaPlaywrightFetcher),
     ])
     def test_map_contains_all_fetchers(self, ats_key, expected_cls):
