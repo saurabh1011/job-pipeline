@@ -1184,100 +1184,129 @@ class LinkedInFetcher:
 
 
 class CapitalOneFetcher:
-    """Fetches jobs from Capital One via the Workday API.
+    """Fetches jobs from capitalonecareers.com (TalentBrew/Radancy).
 
-    List:   POST https://capitalone.wd1.myworkdayjobs.com/wday/cxs/capitalone/External_Careers/jobs
-    Detail: GET  https://capitalone.wd1.myworkdayjobs.com/wday/cxs/capitalone/External_Careers{externalPath}
-    Description is only available on the detail endpoint.
+    Capital One migrated off the Workday tenant this fetcher used to target
+    (capitalone.wd1.myworkdayjobs.com — now dead, 422/500 on every request)
+    to a TalentBrew-powered site. See issue #44 for the investigation.
+
+    Search: POST /search-jobs/resultspost — returns {"results": "<html>...",
+    "hasJobs": bool, ...}; the "results" value is an HTML fragment of job
+    cards, not structured JSON. The endpoint silently returns an empty
+    fragment unless the *complete* field set their frontend JS sends is
+    present (FacetTerm/FacetType/SearchType/SearchResultsModuleName in
+    particular) — a partial/guessed payload looks like success (hasJobs:
+    true) but hasContent stays false and results is "".
+    Detail: GET  {JOB_BASE}{href} — server-rendered, description is in
+    `.ats-description`.
     """
 
-    _LIST_URL = "https://capitalone.wd1.myworkdayjobs.com/wday/cxs/capitalone/External_Careers/jobs"
-    _DETAIL_BASE = "https://capitalone.wd1.myworkdayjobs.com/wday/cxs/capitalone/External_Careers"
-    _JOB_BASE = "https://capitalone.wd1.myworkdayjobs.com/En-US/External_Careers"
-    _PAGE_SIZE = 20
-    _MAX_PAGES = 5
+    _RESULTS_URL = "https://www.capitalonecareers.com/search-jobs/resultspost"
+    _JOB_BASE = "https://www.capitalonecareers.com"
+    _ORGANIZATION_IDS = "234"
+    _ENGINEERING_FACET_TERM = "29016"
+    _ENGINEERING_FACET_TYPE = 1
+    _RECORDS_PER_PAGE = 20
+    _MAX_PAGES = 10
 
     def __init__(self, company_name: str = "Capital One"):
         self.company_name = company_name
 
     def fetch(self, preferences: dict) -> List[dict]:
-        seen_ids: set = set()
-        candidates = []
+        candidates = {}
         for keyword in preferences.get("title_keywords", ["Engineering Manager"]):
-            offset = 0
-            page = 0
-            while page < self._MAX_PAGES:
-                try:
-                    resp = requests.post(
-                        self._LIST_URL,
-                        json={"limit": self._PAGE_SIZE, "offset": offset, "searchText": keyword},
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)",
-                            "Content-Type": "application/json",
-                            "Accept": "application/json",
-                        },
-                        timeout=15,
-                    )
-                    resp.raise_for_status()
-                except Exception as exc:
-                    logger.warning("Capital One list fetch failed for '%s': %s", keyword, exc)
-                    break
-                data = resp.json()
-                postings = data.get("jobPostings", [])
-                if not postings:
-                    break
-                for posting in postings:
-                    title = posting.get("title", "")
-                    ext_path = posting.get("externalPath", "")
-                    job_id = ext_path.split("_")[-1] if "_" in ext_path else ext_path.rstrip("/").split("/")[-1]
-                    if job_id in seen_ids or not _matches_title(title, preferences):
-                        continue
-                    location = posting.get("locationsText", "")
-                    if not _matches_location(location, preferences):
-                        logger.debug("Excluded by location: %s — %s", title, location)
-                        continue
-                    seen_ids.add(job_id)
-                    candidates.append({
-                        "job_id": job_id,
-                        "title": title,
-                        "location": location,
-                        "ext_path": ext_path,
-                        "url": f"{self._JOB_BASE}{ext_path}",
-                    })
-                if len(postings) < self._PAGE_SIZE:
-                    break
-                offset += self._PAGE_SIZE
-                page += 1
+            for job_id, title, location, href in self._search_keyword(keyword, preferences):
+                if job_id not in candidates:
+                    candidates[job_id] = (title, location, href)
 
         results = []
-        for c in candidates:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)"}
+        for job_id, (title, location, href) in candidates.items():
+            url = href if href.startswith("http") else f"{self._JOB_BASE}{href}"
+            description = ""
             try:
-                detail = requests.get(
-                    f"{self._DETAIL_BASE}{c['ext_path']}",
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)",
-                        "Accept": "application/json",
-                    },
-                    timeout=15,
-                )
+                detail = requests.get(url, headers=headers, timeout=15)
                 detail.raise_for_status()
-                info = detail.json().get("jobPostingInfo", {})
-                description = _strip_html(info.get("jobDescription", ""))
+                soup = BeautifulSoup(detail.text, "html.parser")
+                el = soup.select_one(".ats-description")
+                if el:
+                    description = _strip_html(str(el))
             except Exception as exc:
-                logger.warning("Capital One detail fetch failed for %s: %s", c["job_id"], exc)
-                description = ""
+                logger.warning("Capital One detail fetch failed for %s: %s", job_id, exc)
             results.append({
-                "job_id": c["job_id"],
+                "job_id": job_id,
                 "company": self.company_name,
-                "title": c["title"],
-                "location": c["location"],
-                "url": c["url"],
-                "apply_url": c["url"],
+                "title": title,
+                "location": location,
+                "url": url,
+                "apply_url": url,
                 "description": description,
             })
 
         logger.info("Capital One: %d matching jobs found", len(results))
         return results
+
+    def _search_keyword(self, keyword: str, preferences: dict) -> List[tuple]:
+        results = []
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)",
+            "Content-Type": "application/json; charset=utf-8",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        for page_num in range(1, self._MAX_PAGES + 1):
+            payload = {
+                "ActiveFacetID": 0, "Distance": 50, "RadiusUnitType": 2,
+                "RecordsPerPage": self._RECORDS_PER_PAGE, "CurrentPage": page_num,
+                "TotalPages": 0, "TotalContentPages": 0,
+                "Keywords": keyword, "Location": "",
+                "Latitude": None, "Longitude": None, "ShowRadius": False,
+                "FacetTerm": self._ENGINEERING_FACET_TERM, "FacetType": self._ENGINEERING_FACET_TYPE,
+                "SearchResultsModuleName": "Search Results", "SearchFiltersModuleName": None,
+                "SortCriteria": 0, "SortDirection": 0, "SearchType": 2, "SearchResultType": 0,
+                "CategoryFacetTerm": None, "CategoryFacetType": None,
+                "LocationFacetTerm": None, "LocationFacetType": None,
+                "KeywordType": None, "LocationType": None, "LocationPath": None,
+                "OrganizationIds": self._ORGANIZATION_IDS, "RefinedKeywords": [],
+                "AjaxCharLimit": 4096,
+            }
+            try:
+                resp = requests.post(self._RESULTS_URL, data=json.dumps(payload), headers=headers, timeout=20)
+                resp.raise_for_status()
+                jobs_raw = self._parse_search_html(resp.json())
+            except Exception as exc:
+                logger.warning("Capital One search failed for '%s' page %d: %s", keyword, page_num, exc)
+                break
+
+            if not jobs_raw:
+                break
+
+            for job_id, title, location, href in jobs_raw:
+                if not _matches_title(title, preferences):
+                    continue
+                if not _matches_location(location, preferences):
+                    logger.debug("Capital One excluded by location: %s — %s", title, location)
+                    continue
+                results.append((job_id, title, location, href))
+        return results
+
+    @staticmethod
+    def _parse_search_html(data: dict) -> List[tuple]:
+        html = data.get("results", "") if isinstance(data, dict) else ""
+        if not html:
+            return []
+        soup = BeautifulSoup(html, "html.parser")
+        jobs = []
+        for a in soup.select("a[data-job-id]"):
+            job_id = a.get("data-job-id", "")
+            href = a.get("href", "")
+            if not job_id or not href:
+                continue
+            title_el = a.select_one("h2")
+            location_el = a.select_one(".job-location")
+            title = title_el.get_text(strip=True) if title_el else ""
+            location = location_el.get_text(strip=True) if location_el else ""
+            jobs.append((job_id, title, location, href))
+        return jobs
 
 
 class JSearchFetcher:
