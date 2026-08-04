@@ -8,12 +8,23 @@ import web.feedback as fb
 USER = {"user_id": "u1", "email": "alice@example.com", "name": "Alice", "is_admin": False}
 
 
+def _unmocked_post(*args, **kwargs):
+    raise AssertionError(
+        "web.feedback.httpx.post was called without being mocked in this test — "
+        "that would hit the real GitHub API. Wrap the call in "
+        "`with patch('web.feedback.httpx.post', ...)`."
+    )
+
+
 @pytest.fixture(autouse=True)
 def reset_feedback_state(monkeypatch):
-    """Isolate each test: clear cooldown dict and inject token/repo via module attrs."""
+    """Isolate each test: clear cooldown dict, inject token/repo via module attrs,
+    and block any real network call by default (a test must explicitly patch
+    httpx.post to make one — see _unmocked_post)."""
     fb._last_submission.clear()
     monkeypatch.setattr(fb, "GH_FEEDBACK_TOKEN", "")
     monkeypatch.setattr(fb, "GH_FEEDBACK_REPO", "")
+    monkeypatch.setattr(fb.httpx, "post", _unmocked_post)
     yield
     fb._last_submission.clear()
 

@@ -16,10 +16,7 @@ _last_submission: dict[str, float] = {}
 
 
 def create_github_issue(title: str, body: str, user: dict) -> dict:
-    import web.feedback as _self
-    token = os.environ.get("GH_FEEDBACK_TOKEN") or _self.GH_FEEDBACK_TOKEN
-    repo = os.environ.get("GH_FEEDBACK_REPO") or _self.GH_FEEDBACK_REPO
-    if not token or not repo:
+    if not GH_FEEDBACK_TOKEN or not GH_FEEDBACK_REPO:
         raise HTTPException(
             status_code=503,
             detail="Feedback not configured (missing GH_FEEDBACK_TOKEN or GH_FEEDBACK_REPO)",
@@ -39,9 +36,9 @@ def create_github_issue(title: str, body: str, user: dict) -> dict:
     issue_title = title if title.strip() else f"Feedback from {user['name']}"
 
     resp = httpx.post(
-        f"{_GH_API_BASE}/repos/{repo}/issues",
+        f"{_GH_API_BASE}/repos/{GH_FEEDBACK_REPO}/issues",
         headers={
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {GH_FEEDBACK_TOKEN}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         },
