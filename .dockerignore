@@ -1,0 +1,37 @@
+# Personal data / secrets — must never end up baked into an image layer
+data/
+profile/
+jobs.db
+jobs.db-shm
+jobs.db-wal
+auth.db
+auth.db-shm
+auth.db-wal
+pipeline_checkpoint.json
+output/
+logs/
+.env*
+*.key
+config/preferences.yaml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# VCS / tooling
+.git/
+.github/
+.worktrees/
+.claude/
+node_modules/
+mobile/
+
+# macOS
+.DS_Store

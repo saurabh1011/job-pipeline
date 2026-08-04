@@ -1,0 +1,37 @@
+# Local dev: runs the exact same image as production (Dockerfile), so
+# pandoc/typst/chromium and every other system dependency are guaranteed
+# to match what Fly.io runs — no more "works in Docker, breaks on my Mac".
+#
+# First run: `docker compose up -d --build`
+# Logs:       `docker compose logs -f`
+# Stop:       `docker compose down`
+services:
+  job-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: job-pipeline-local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env.local
+    environment:
+      APP_MODE: local
+      DB_PATH: /data/jobs.db
+      AUTH_DB_PATH: /data/auth.db
+      DATA_DIR: /data
+      OUTPUT_DIR: /app/output
+      CONFIG_DIR: /app/config
+      PROFILE_DIR: /app/profile
+      LOG_DIR: /app/logs
+    volumes:
+      # Dedicated persistent volume for the SQLite DBs (whole directory, so
+      # the WAL/SHM sidecar files SQLite creates alongside them persist too —
+      # bind-mounting the .db files individually would leave those siblings
+      # trapped in the container's throwaway layer).
+      - ./data:/data
+      - ./output:/app/output
+      - ./config:/app/config
+      - ./profile:/app/profile
+      - ./logs:/app/logs

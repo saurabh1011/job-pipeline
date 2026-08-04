@@ -6,23 +6,33 @@
 # What this does:
 #   1. Writes .env.local (gitignored) with the secrets needed to run the
 #      server, captured from your current shell environment.
-#   2. Installs + starts a launchd LaunchAgent that keeps
-#      `uvicorn web.server:app` running on 127.0.0.1:8000 (survives reboots,
-#      restarts on crash).
+#   2. Builds and starts the server via `docker compose` — the exact same
+#      image (Dockerfile) that runs in production, so pandoc/typst/chromium
+#      and every other system dependency are guaranteed to match what Fly.io
+#      runs. `restart: unless-stopped` keeps it running across crashes and
+#      Docker restarts.
 #   3. Adds two crontab entries (8am / 6pm) that trigger a pipeline run via
 #      the local server's own API, same as the old GitHub Actions workflow
 #      did against the remote server.
 #
 # Safe to re-run: each step is idempotent.
 #
-# Prerequisite: GEMINI_API_KEY, SMTP_USER, SMTP_PASSWORD, ALERT_EMAIL must
-# already be exported in the shell you run this from (e.g. via ~/.zshrc).
+# Prerequisites:
+#   - Docker Desktop installed and running (`docker info` must succeed).
+#     For the container to survive a reboot, enable Docker Desktop's
+#     "Start Docker Desktop when you log in" setting (Settings > General) —
+#     that part can't be scripted.
+#   - GEMINI_API_KEY, SMTP_USER, SMTP_PASSWORD, ALERT_EMAIL must already be
+#     exported in the shell you run this from (e.g. via ~/.zshrc).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-LABEL="com.jobpipeline.local-server"
-PLIST_DEST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 CRON_MARKER="# job-pipeline-local-trigger"
+
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker Desktop isn't running. Start it and re-run this script." >&2
+  exit 1
+fi
 
 missing=()
 for var in GEMINI_API_KEY SMTP_USER SMTP_PASSWORD ALERT_EMAIL; do
@@ -37,7 +47,7 @@ if [ "${#missing[@]}" -gt 0 ]; then
   exit 1
 fi
 
-mkdir -p "$REPO_ROOT/logs"
+mkdir -p "$REPO_ROOT/logs" "$REPO_ROOT/data" "$REPO_ROOT/output" "$REPO_ROOT/config" "$REPO_ROOT/profile"
 
 # ── 1. .env.local ────────────────────────────────────────────────────────
 if [ -f "$REPO_ROOT/.env.local" ]; then
@@ -55,19 +65,9 @@ else
 fi
 chmod 600 "$REPO_ROOT/.env.local"
 
-# ── 2. launchd LaunchAgent ──────────────────────────────────────────────
-mkdir -p "$HOME/Library/LaunchAgents"
-sed "s|__REPO_ROOT__|$REPO_ROOT|g" \
-  "$REPO_ROOT/scripts/local/com.jobpipeline.local-server.plist.template" \
-  > "$PLIST_DEST"
-chmod 600 "$PLIST_DEST"
-
-UID_NUM="$(id -u)"
-launchctl bootout "gui/$UID_NUM/$LABEL" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$UID_NUM" "$PLIST_DEST"
-launchctl enable "gui/$UID_NUM/$LABEL"
-launchctl kickstart -k "gui/$UID_NUM/$LABEL"
-echo "→ launchd agent '$LABEL' installed and started"
+# ── 2. docker compose ────────────────────────────────────────────────────
+( cd "$REPO_ROOT" && docker compose up -d --build )
+echo "→ container 'job-pipeline-local' built and started"
 
 # ── 3. crontab entries ───────────────────────────────────────────────────
 existing_cron="$(crontab -l 2>/dev/null || true)"
@@ -86,8 +86,11 @@ echo
 echo "Done. Web UI: http://localhost:8000"
 echo
 echo "Remaining manual steps:"
-echo "  1. If cron doesn't fire, grant Full Disk Access to cron in"
+echo "  1. Enable Docker Desktop > Settings > General >"
+echo "     'Start Docker Desktop when you log in', so the container comes"
+echo "     back up after a reboot."
+echo "  2. If cron doesn't fire, grant Full Disk Access to cron in"
 echo "     System Settings > Privacy & Security > Full Disk Access."
-echo "  2. On the deployed app (job-pipeline.fly.dev), open the Schedule tab"
+echo "  3. On the deployed app (job-pipeline.fly.dev), open the Schedule tab"
 echo "     for your profile and clear the schedule, so it stops auto-running"
 echo "     from the blocked IP."
