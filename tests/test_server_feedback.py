@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
+import web.feedback as feedback_module
 import web.server as server_module
 from web.server import app
 
@@ -11,8 +12,8 @@ from web.server import app
 def client(monkeypatch, tmp_path):
     monkeypatch.setattr(server_module, "DB_PATH", str(tmp_path / "test.db"))
     monkeypatch.delenv("WEB_API_KEY", raising=False)
-    monkeypatch.setenv("GH_FEEDBACK_TOKEN", "ghp_test")
-    monkeypatch.setenv("GH_FEEDBACK_REPO", "owner/repo")
+    monkeypatch.setattr(feedback_module, "GH_FEEDBACK_TOKEN", "ghp_test")
+    monkeypatch.setattr(feedback_module, "GH_FEEDBACK_REPO", "owner/repo")
     with TestClient(app) as c:
         yield c
 
