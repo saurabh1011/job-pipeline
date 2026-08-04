@@ -6,6 +6,9 @@ jobs.db
 jobs.db-shm
 jobs.db-wal
 
+# Local Docker Compose persistent volume (mirrors Fly's /data mount)
+data/
+
 # Auth database (generated at runtime)
 auth.db
 auth.db-shm

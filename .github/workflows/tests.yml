@@ -24,3 +24,20 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -q
+
+  docker-image-deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Verify Docker image has required binaries (pandoc, typst)
+        run: python -m pytest tests/test_docker_image.py -q -m docker
