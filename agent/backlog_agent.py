@@ -19,16 +19,39 @@ Requirements:
 """
 
 import json
-import os
 import subprocess
 import sys
+from pathlib import Path
+
+# jobApplications/ — the only directory the agent is allowed to write to.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def build_allowed_tools(repo_root: Path) -> list[str]:
+    """Tool grants for the non-interactive `claude` run, scoped to repo_root.
+
+    Edit/Write are confined to repo_root via path glob. Bash can't be path-scoped
+    (its rules match command text, not files touched), so it's limited to a
+    whitelist of the commands the agent actually needs instead of blanket "Bash".
+    """
+    return [
+        "Read",
+        "Glob",
+        "Grep",
+        f"Edit({repo_root}/**)",
+        f"Write({repo_root}/**)",
+        "Bash(git *)",
+        "Bash(python -m pytest*)",
+        "Bash(python3 -m pytest*)",
+        "Bash(pytest*)",
+    ]
 
 
 def get_issue(issue_number: int) -> dict:
     result = subprocess.run(
         ["gh", "issue", "view", str(issue_number),
          "--json", "number,title,body,labels"],
-        capture_output=True, text=True, check=True,
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
     )
     return json.loads(result.stdout)
 
@@ -57,11 +80,11 @@ Be thorough. Follow the design guidelines in CLAUDE.md exactly."""
         [
             "claude",
             "-p", prompt,
-            "--allowedTools", "Read,Edit,Write,Bash,Glob,Grep",
+            "--allowedTools", ",".join(build_allowed_tools(REPO_ROOT)),
             "--permission-mode", "acceptEdits",
             "--output-format", "json",
         ],
-        cwd=os.getcwd(),
+        cwd=REPO_ROOT,
         text=True,
         capture_output=True,
     )
@@ -85,18 +108,18 @@ Be thorough. Follow the design guidelines in CLAUDE.md exactly."""
 def create_pr(issue: dict) -> None:
     branch = f"agent/issue-{issue['number']}"
 
-    subprocess.run(["git", "checkout", "-b", branch], check=True)
+    subprocess.run(["git", "checkout", "-b", branch], cwd=REPO_ROOT, check=True)
 
     # Stage only modified tracked files + new files in code directories.
     # Never use -A — the repo has untracked mobile/, docs/, logs/ etc.
     # that must not be swept into agent PRs.
-    subprocess.run(["git", "add", "-u"], check=True)
+    subprocess.run(["git", "add", "-u"], cwd=REPO_ROOT, check=True)
     for code_dir in ["pipeline", "tests", "web", "config", "agent"]:
-        if os.path.isdir(code_dir):
-            subprocess.run(["git", "add", code_dir], check=True)
+        if (REPO_ROOT / code_dir).is_dir():
+            subprocess.run(["git", "add", code_dir], cwd=REPO_ROOT, check=True)
 
     # Check if there's anything staged
-    diff_check = subprocess.run(["git", "diff", "--cached", "--quiet"])
+    diff_check = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=REPO_ROOT)
     if diff_check.returncode == 0:
         print("Agent made no file changes — nothing to commit.")
         return
@@ -105,9 +128,9 @@ def create_pr(issue: dict) -> None:
         "git", "commit", "-m",
         f"Implement #{issue['number']}: {issue['title']}\n\n"
         f"Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
-    ], check=True)
+    ], cwd=REPO_ROOT, check=True)
 
-    subprocess.run(["git", "push", "-u", "origin", branch], check=True)
+    subprocess.run(["git", "push", "-u", "origin", branch], cwd=REPO_ROOT, check=True)
 
     subprocess.run([
         "gh", "pr", "create",
@@ -121,7 +144,7 @@ def create_pr(issue: dict) -> None:
             f"- [ ] No unintended changes"
         ),
         "--base", "main",
-    ], check=True)
+    ], cwd=REPO_ROOT, check=True)
 
     print(f"\n✓ PR opened for issue #{issue['number']}")
 
