@@ -267,18 +267,39 @@ class TestSendPipelineEmail:
     def test_sends_when_all_env_vars_set(self):
         from web.server import _send_pipeline_email
         stats = {**SAMPLE_STATS, "fetch_errors": {}, "run_error": None, "run_date": "2026-05-12"}
+        logs = []
         with patch.dict("os.environ", {"SMTP_USER": "u@g.com", "SMTP_PASSWORD": "pw", "ALERT_EMAIL": "me@g.com"}), \
              patch("pipeline.alerter.smtplib.SMTP_SSL") as mock_ssl:
             ctx = MagicMock()
             mock_ssl.return_value.__enter__ = MagicMock(return_value=ctx)
             mock_ssl.return_value.__exit__ = MagicMock(return_value=False)
-            _send_pipeline_email(SAMPLE_JOBS, SAMPLE_JOBS[:1], stats)
+            result = _send_pipeline_email(logs.append, SAMPLE_JOBS, SAMPLE_JOBS[:1], stats)
         ctx.send_message.assert_called_once()
+        assert result is None
+        assert any("sent" in line.lower() for line in logs)
 
     def test_skips_when_smtp_not_configured(self):
         from web.server import _send_pipeline_email
         stats = {**SAMPLE_STATS, "fetch_errors": {}, "run_error": None, "run_date": "2026-05-12"}
+        logs = []
         with patch.dict("os.environ", {"SMTP_USER": "", "SMTP_PASSWORD": "", "ALERT_EMAIL": ""}), \
              patch("pipeline.alerter.smtplib.SMTP_SSL") as mock_ssl:
-            _send_pipeline_email(SAMPLE_JOBS, SAMPLE_JOBS[:1], stats)
+            result = _send_pipeline_email(logs.append, SAMPLE_JOBS, SAMPLE_JOBS[:1], stats)
         mock_ssl.assert_not_called()
+        assert result is None
+        assert any("skip" in line.lower() for line in logs)
+
+    def test_returns_error_and_logs_it_on_send_failure(self):
+        """Regression test: a failed send must be visible via the log() callback
+        (which reaches the task drawer + run history), not just logger.error
+        (which only reaches docker/server logs and is invisible to the user)."""
+        from web.server import _send_pipeline_email
+        stats = {**SAMPLE_STATS, "fetch_errors": {}, "run_error": None, "run_date": "2026-05-12"}
+        logs = []
+        with patch.dict("os.environ", {"SMTP_USER": "u@g.com", "SMTP_PASSWORD": "pw", "ALERT_EMAIL": "me@g.com"}), \
+             patch("pipeline.alerter.smtplib.SMTP_SSL") as mock_ssl:
+            mock_ssl.return_value.__enter__.side_effect = Exception("535 Bad Credentials")
+            result = _send_pipeline_email(logs.append, SAMPLE_JOBS, SAMPLE_JOBS[:1], stats)
+        assert result is not None
+        assert "Bad Credentials" in result
+        assert any("ERROR" in line and "Bad Credentials" in line for line in logs)

@@ -524,13 +524,20 @@ def _notify_new_user(user: dict):
     threading.Thread(target=_send, daemon=True).start()
 
 
-def _send_pipeline_email(all_scored: list, alert_jobs: list, stats: dict):
-    """Send run summary email if SMTP credentials are configured."""
+def _send_pipeline_email(log, all_scored: list, alert_jobs: list, stats: dict) -> Optional[str]:
+    """Send run summary email if SMTP credentials are configured.
+
+    Returns None if the email was sent (or intentionally skipped because SMTP
+    isn't configured), or an error message string if sending failed. The
+    caller uses this to reflect email failures in the run's status/error_msg —
+    logger.error alone doesn't reach the task drawer or run history.
+    """
     smtp_user = os.environ.get("SMTP_USER")
     smtp_password = os.environ.get("SMTP_PASSWORD")
     alert_email = os.environ.get("ALERT_EMAIL")
     if not (smtp_user and smtp_password and alert_email):
-        return
+        log("Skipping summary email: SMTP not configured.")
+        return None
     from pipeline.alerter import GmailAlerter
     try:
         GmailAlerter(alert_email).send_alert(
@@ -538,8 +545,12 @@ def _send_pipeline_email(all_scored: list, alert_jobs: list, stats: dict):
             all_scored=all_scored, stats=stats,
         )
         logger.info("Pipeline email sent to %s", alert_email)
+        log(f"Summary email sent to {alert_email}.")
+        return None
     except Exception as exc:
         logger.error("Failed to send pipeline email: %s", exc)
+        log(f"  ERROR: failed to send summary email: {exc}")
+        return str(exc)
 
 
 def _score_job_list(log, jobs: list, prefs: dict, provider, threshold: int, loader,
@@ -691,18 +702,7 @@ def _do_run(log, group: str = None, company_filter: list = None,
         raise
 
     finally:
-        _fin_store = JobStore(paths.db_path)
-        _fin_store.finish_run(
-            run_id,
-            jobs_fetched=len(fetched_all),
-            jobs_new=len(new_jobs),
-            jobs_scored=scored,
-            jobs_generated=0,
-            status="error" if _run_error else "done",
-            error_msg=_run_error,
-        )
-        _fin_store.close()
-
+        _email_error = None
         try:
             from datetime import date as _date
             _zero_companies = [
@@ -722,9 +722,30 @@ def _do_run(log, group: str = None, company_filter: list = None,
                 "run_error": _run_error,
             }
             _alert_jobs = [j for j in all_scored_jobs if (j.get("match_score") or 0) >= threshold]
-            _send_pipeline_email(all_scored_jobs, _alert_jobs, _stats)
+            _email_error = _send_pipeline_email(log, all_scored_jobs, _alert_jobs, _stats)
         except Exception as e:
+            _email_error = str(e)
             logger.error("Failed to send pipeline summary email: %s", e)
+            log(f"  ERROR: failed to send summary email: {e}")
+
+        if _run_error:
+            _status = "error"
+        elif _email_error:
+            _status = "done_email_failed"
+        else:
+            _status = "done"
+
+        _fin_store = JobStore(paths.db_path)
+        _fin_store.finish_run(
+            run_id,
+            jobs_fetched=len(fetched_all),
+            jobs_new=len(new_jobs),
+            jobs_scored=scored,
+            jobs_generated=0,
+            status=_status,
+            error_msg=_run_error or _email_error,
+        )
+        _fin_store.close()
 
 
 def _do_rescore_job(log, company: str, job_id: str, paths: ProfilePaths = None):
