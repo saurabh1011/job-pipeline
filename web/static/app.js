@@ -743,9 +743,12 @@ const App = (() => {
       const dur = r.ended_at ? _fmtDuration(r.started_at, r.ended_at) : "—";
       const statusCls = r.status === "done" ? "run-status-done"
                       : r.status === "error" ? "run-status-error"
+                      : r.status === "done_email_failed" ? "run-status-warning"
                       : "run-status-running";
       const statusLabel = r.status === "error" && r.error_msg
         ? `<span class="${statusCls}" title="${_esc(r.error_msg)}">error ⚠</span>`
+        : r.status === "done_email_failed" && r.error_msg
+        ? `<span class="${statusCls}" title="${_esc(r.error_msg)}">done, email failed ⚠</span>`
         : `<span class="${statusCls}">${r.status}</span>`;
       return `<tr>
         <td class="run-when">${dateStr}<br><span class="run-time">${timeStr}</span></td>

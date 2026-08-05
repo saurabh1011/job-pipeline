@@ -472,7 +472,7 @@ class TestDoRunEmailIntegration:
         scored_job = {**fake_job, "match_score": 9, "match_summary": "Great match"}
         with patch("pipeline.fetcher.fetch_all_companies", return_value=[fake_job]), \
              patch("web.server._score_job_list", return_value=(1, 0, [scored_job])), \
-             patch("web.server._send_pipeline_email") as mock_email:
+             patch("web.server._send_pipeline_email", return_value=None) as mock_email:
             _do_run(lambda m: None)
         mock_email.assert_called_once()
 
@@ -482,20 +482,20 @@ class TestDoRunEmailIntegration:
         scored_job = {**fake_job, "match_score": 9, "match_summary": "Great match"}
         with patch("pipeline.fetcher.fetch_all_companies", return_value=[fake_job]), \
              patch("web.server._score_job_list", return_value=(1, 0, [scored_job])), \
-             patch("web.server._send_pipeline_email") as mock_email:
+             patch("web.server._send_pipeline_email", return_value=None) as mock_email:
             _do_run(lambda m: None)
-        _, _, stats = mock_email.call_args[0]
+        _, _, _, stats = mock_email.call_args[0]
         assert stats["scored_jobs"] == 1
         assert stats["failed_scoring"] == 0
 
     def test_email_sent_even_when_fetch_crashes(self, do_run_patches, cfg_dir, db_path):
         from web.server import _do_run
         with patch("pipeline.fetcher.fetch_all_companies", side_effect=Exception("Network down")), \
-             patch("web.server._send_pipeline_email") as mock_email:
+             patch("web.server._send_pipeline_email", return_value=None) as mock_email:
             with pytest.raises(Exception, match="Network down"):
                 _do_run(lambda m: None)
         mock_email.assert_called_once()
-        _, _, stats = mock_email.call_args[0]
+        _, _, _, stats = mock_email.call_args[0]
         assert stats["run_error"] == "Network down"
 
     def test_fetch_errors_flow_to_email_stats(self, do_run_patches, cfg_dir, db_path):
@@ -507,10 +507,10 @@ class TestDoRunEmailIntegration:
             return []
 
         with patch("pipeline.fetcher.fetch_all_companies", side_effect=fetch_with_errors), \
-             patch("web.server._send_pipeline_email") as mock_email:
+             patch("web.server._send_pipeline_email", return_value=None) as mock_email:
             _do_run(lambda m: None)
 
-        _, _, stats = mock_email.call_args[0]
+        _, _, _, stats = mock_email.call_args[0]
         assert "Acme" in stats["fetch_errors"]
         assert "TIMEOUT" in stats["fetch_errors"]["Acme"]
 
@@ -521,12 +521,67 @@ class TestDoRunEmailIntegration:
         low = {**_fake_job(job_id="j2"), "match_score": 5, "match_summary": "Weak"}
         with patch("pipeline.fetcher.fetch_all_companies", return_value=[fake_job, _fake_job(job_id="j2")]), \
              patch("web.server._score_job_list", return_value=(2, 0, [high, low])), \
-             patch("web.server._send_pipeline_email") as mock_email:
+             patch("web.server._send_pipeline_email", return_value=None) as mock_email:
             _do_run(lambda m: None)
-        all_scored, alert_jobs, _ = mock_email.call_args[0]
+        _, all_scored, alert_jobs, _ = mock_email.call_args[0]
         assert len(all_scored) == 2
         assert all(j["match_score"] >= 7 for j in alert_jobs)
         assert len(alert_jobs) == 1
+
+    def test_run_status_done_email_failed_when_send_fails(self, do_run_patches, cfg_dir, db_path):
+        """Regression test: a pipeline that fetches/scores fine but fails to
+        email must NOT be marked status='done' with the failure invisible.
+        It also must not be marked status='error' — the pipeline itself
+        succeeded, only the notification failed."""
+        from web.server import _do_run
+        from pipeline.store import JobStore
+        fake_job = _fake_job()
+        scored_job = {**fake_job, "match_score": 9, "match_summary": "Great match"}
+        with patch("pipeline.fetcher.fetch_all_companies", return_value=[fake_job]), \
+             patch("web.server._score_job_list", return_value=(1, 0, [scored_job])), \
+             patch("web.server._send_pipeline_email", return_value="535 Bad Credentials"):
+            _do_run(lambda m: None)
+
+        store = JobStore(db_path)
+        latest = store.list_runs(limit=1)[0]
+        store.close()
+        assert latest["status"] == "done_email_failed"
+        assert "Bad Credentials" in latest["error_msg"]
+
+    def test_run_status_stays_done_when_email_succeeds(self, do_run_patches, cfg_dir, db_path):
+        from web.server import _do_run
+        from pipeline.store import JobStore
+        fake_job = _fake_job()
+        scored_job = {**fake_job, "match_score": 9, "match_summary": "Great match"}
+        with patch("pipeline.fetcher.fetch_all_companies", return_value=[fake_job]), \
+             patch("web.server._score_job_list", return_value=(1, 0, [scored_job])), \
+             patch("web.server._send_pipeline_email", return_value=None):
+            _do_run(lambda m: None)
+
+        store = JobStore(db_path)
+        latest = store.list_runs(limit=1)[0]
+        store.close()
+        assert latest["status"] == "done"
+        assert latest["error_msg"] is None
+
+    def test_email_failure_reaches_log_callback(self, do_run_patches, cfg_dir, db_path, monkeypatch):
+        """The task drawer log() must show the email failure — logger.error
+        alone (what the old code used) never reaches the UI. Exercises the
+        real _send_pipeline_email (only the SMTP transport is mocked), not a
+        stand-in, so this covers the actual wiring end to end."""
+        from web.server import _do_run
+        monkeypatch.setenv("SMTP_USER", "u@g.com")
+        monkeypatch.setenv("SMTP_PASSWORD", "pw")
+        monkeypatch.setenv("ALERT_EMAIL", "me@g.com")
+        fake_job = _fake_job()
+        scored_job = {**fake_job, "match_score": 9, "match_summary": "Great match"}
+        logs = []
+        with patch("pipeline.fetcher.fetch_all_companies", return_value=[fake_job]), \
+             patch("web.server._score_job_list", return_value=(1, 0, [scored_job])), \
+             patch("pipeline.alerter.smtplib.SMTP_SSL") as mock_ssl:
+            mock_ssl.return_value.__enter__.side_effect = Exception("535 Bad Credentials")
+            _do_run(logs.append)
+        assert any("Bad Credentials" in line for line in logs)
 
 
 def _seed_jobs(db_path, company, job_ids):
@@ -588,7 +643,7 @@ class TestMarkUnavailableIntegration:
 
         with patch("pipeline.fetcher.fetch_all_companies",
                    return_value=_make_fetched("Acme", ["j1", "j2"])), \
-             patch("web.server._send_pipeline_email"):
+             patch("web.server._send_pipeline_email", return_value=None):
             _do_run(lambda m: None)
 
         store = JobStore(db_path)
@@ -606,7 +661,7 @@ class TestMarkUnavailableIntegration:
         # 4 seen / 10 active = 40% < 50% threshold
         with patch("pipeline.fetcher.fetch_all_companies",
                    return_value=_make_fetched("Acme", ["j0", "j1", "j2", "j3"])), \
-             patch("web.server._send_pipeline_email"):
+             patch("web.server._send_pipeline_email", return_value=None):
             _do_run(lambda m: None)
 
         store = JobStore(db_path)
@@ -626,7 +681,7 @@ class TestMarkUnavailableIntegration:
         # j1 reappears in current fetch alongside j2
         with patch("pipeline.fetcher.fetch_all_companies",
                    return_value=_make_fetched("Acme", ["j1", "j2"])), \
-             patch("web.server._send_pipeline_email"):
+             patch("web.server._send_pipeline_email", return_value=None):
             _do_run(lambda m: None)
 
         store2 = JobStore(db_path)

@@ -279,6 +279,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .run-group-badge { color: var(--accent); border-color: var(--accent); }
 .run-status-done { color: var(--green); font-weight: 500; }
 .run-status-error { color: var(--red); font-weight: 500; cursor: help; }
+.run-status-warning { color: var(--yellow); font-weight: 500; cursor: help; }
 .run-status-running { color: var(--accent); font-weight: 500; }
 
 /* Empty state */

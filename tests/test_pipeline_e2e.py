@@ -92,7 +92,7 @@ def _pipeline_mocks():
     """Context manager that patches all external calls made by _do_run."""
     return (
         patch("pipeline.fetcher.fetch_all_companies", return_value=[]),
-        patch("web.server._send_pipeline_email"),
+        patch("web.server._send_pipeline_email", return_value=None),
         patch("pipeline.llm.create_provider", return_value=MagicMock()),
         patch("pipeline.profile.ProfileLoader", return_value=MagicMock()),
     )
@@ -109,7 +109,7 @@ class TestDailyPipelineRunE2E:
     def test_empty_body_with_api_key_returns_task_id(self, e2e_client):
         """GitHub Actions sends an empty body {}. Must return a task_id."""
         with patch("pipeline.fetcher.fetch_all_companies", return_value=[]), \
-             patch("web.server._send_pipeline_email"), \
+             patch("web.server._send_pipeline_email", return_value=None), \
              patch("pipeline.llm.create_provider", return_value=MagicMock()), \
              patch("pipeline.profile.ProfileLoader", return_value=MagicMock()):
             r = e2e_client.post("/api/pipeline/run", headers=_API_KEY_HEADER, json={})
@@ -122,7 +122,7 @@ class TestDailyPipelineRunE2E:
     def test_pipeline_task_reaches_done_status(self, e2e_client):
         """The background task must complete with status='done', not hang or error."""
         with patch("pipeline.fetcher.fetch_all_companies", return_value=[]), \
-             patch("web.server._send_pipeline_email"), \
+             patch("web.server._send_pipeline_email", return_value=None), \
              patch("pipeline.llm.create_provider", return_value=MagicMock()), \
              patch("pipeline.profile.ProfileLoader", return_value=MagicMock()):
             r = e2e_client.post("/api/pipeline/run", headers=_API_KEY_HEADER, json={})
@@ -137,7 +137,7 @@ class TestDailyPipelineRunE2E:
     def test_completed_run_appears_in_history(self, e2e_client):
         """After a successful run, GET /api/runs must include a completed run record."""
         with patch("pipeline.fetcher.fetch_all_companies", return_value=[]), \
-             patch("web.server._send_pipeline_email"), \
+             patch("web.server._send_pipeline_email", return_value=None), \
              patch("pipeline.llm.create_provider", return_value=MagicMock()), \
              patch("pipeline.profile.ProfileLoader", return_value=MagicMock()):
             r = e2e_client.post("/api/pipeline/run", headers=_API_KEY_HEADER, json={})
@@ -158,7 +158,7 @@ class TestDailyPipelineRunE2E:
     def test_email_alerter_called_after_run(self, e2e_client):
         """_send_pipeline_email must be called once per run (success or failure)."""
         with patch("pipeline.fetcher.fetch_all_companies", return_value=[]), \
-             patch("web.server._send_pipeline_email") as mock_email, \
+             patch("web.server._send_pipeline_email", return_value=None) as mock_email, \
              patch("pipeline.llm.create_provider", return_value=MagicMock()), \
              patch("pipeline.profile.ProfileLoader", return_value=MagicMock()):
             r = e2e_client.post("/api/pipeline/run", headers=_API_KEY_HEADER, json={})
@@ -175,7 +175,7 @@ class TestDailyPipelineRunE2E:
     def test_task_status_polling_returns_terminal_state(self, e2e_client):
         """GET /api/tasks/{id} must eventually return 'done' or 'error', never stay 'running' forever."""
         with patch("pipeline.fetcher.fetch_all_companies", return_value=[]), \
-             patch("web.server._send_pipeline_email"), \
+             patch("web.server._send_pipeline_email", return_value=None), \
              patch("pipeline.llm.create_provider", return_value=MagicMock()), \
              patch("pipeline.profile.ProfileLoader", return_value=MagicMock()):
             r = e2e_client.post("/api/pipeline/run", headers=_API_KEY_HEADER, json={})
