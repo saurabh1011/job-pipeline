@@ -1,5 +1,5 @@
 """Unit tests for agent/backlog_agent.py — env sanitization, worktree
-isolation, and transcript persistence.
+isolation, transcript persistence, and non-interactive prompt behavior.
 
 Regression context: a local run of this agent (issue #13) leaked a real
 GH_FEEDBACK_TOKEN into the test suite (spam issues #51/#52) and swept an
@@ -7,6 +7,14 @@ unrelated session's approved Bash permissions into its PR via `git add -u`
 on a tracked .claude/settings.local.json. These tests guard the fixes for
 both: the agent's subprocess env must be built from an explicit allowlist,
 and it must operate in its own isolated worktree, never the live checkout.
+
+Separately, that same run never touched the actual task (add companies to
+config/companies.yaml) at all — it researched it thoroughly, then stopped
+to ask two clarifying questions and committed only an unrelated side-quest,
+because a non-interactive run has no way to receive an answer. build_prompt
+and build_pr_body cover the fix: the agent is told explicitly to decide
+rather than stall, and its own summary is threaded into the PR body so the
+reasoning is visible where a human can actually act on it.
 """
 import subprocess
 from pathlib import Path
@@ -15,6 +23,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.backlog_agent import (
+    build_pr_body,
+    build_prompt,
     create_pr,
     make_worktree,
     remove_worktree,
@@ -165,9 +175,22 @@ class TestRunAgentIsolation:
 
         mock_proc = MagicMock(returncode=1, stdout="", stderr="boom")
         with patch("agent.backlog_agent.subprocess.run", return_value=mock_proc):
-            result = run_agent(SAMPLE_ISSUE, worktree)
+            success, _summary = run_agent(SAMPLE_ISSUE, worktree)
 
-        assert result is False
+        assert success is False
+
+    def test_returns_summary_from_result_field(self, tmp_path, monkeypatch):
+        import agent.backlog_agent as mod
+        monkeypatch.setattr(mod, "LOG_DIR", tmp_path / "logs")
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+
+        mock_proc = MagicMock(returncode=0, stdout='{"result": "Chose option A because X."}', stderr="")
+        with patch("agent.backlog_agent.subprocess.run", return_value=mock_proc):
+            success, summary = run_agent(SAMPLE_ISSUE, worktree)
+
+        assert success is True
+        assert summary == "Chose option A because X."
 
 
 class TestCreatePrIsolation:
@@ -197,3 +220,36 @@ class TestCreatePrIsolation:
         commands = [call.args[0][:2] for call in mock_run.call_args_list]
         assert ["git", "commit"] not in commands
         assert ["git", "push"] not in commands
+
+
+class TestPromptForbidsStalling:
+    def test_instructs_agent_not_to_stop_and_ask(self):
+        prompt = build_prompt(SAMPLE_ISSUE)
+        assert "do not stop" in prompt.lower() or "not stop and ask" in prompt.lower()
+
+    def test_explains_run_is_non_interactive(self):
+        prompt = build_prompt(SAMPLE_ISSUE)
+        assert "non-interactive" in prompt.lower()
+
+    def test_still_includes_issue_title_and_body(self):
+        prompt = build_prompt(SAMPLE_ISSUE)
+        assert SAMPLE_ISSUE["title"] in prompt
+        assert SAMPLE_ISSUE["body"] in prompt
+
+
+class TestPrBodyIncludesSummary:
+    def test_includes_agent_summary_when_present(self):
+        body = build_pr_body(SAMPLE_ISSUE, "Chose the Workday abstraction because X.")
+        assert "Chose the Workday abstraction because X." in body
+        assert f"Implements #{SAMPLE_ISSUE['number']}" in body
+
+    def test_falls_back_to_checklist_only_when_summary_empty(self):
+        body = build_pr_body(SAMPLE_ISSUE, "")
+        assert "Agent's summary" not in body
+        assert f"Implements #{SAMPLE_ISSUE['number']}" in body
+
+    def test_truncates_very_long_summary(self):
+        huge = "x" * 20000
+        body = build_pr_body(SAMPLE_ISSUE, huge)
+        assert len(body) < len(huge) + 1000
+        assert "truncated" in body
