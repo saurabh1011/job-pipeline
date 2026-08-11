@@ -38,3 +38,13 @@ config/preferences.yaml
 
 # macOS
 .DS_Store
+
+# Claude Code — per-developer/per-machine local permissions, not shared state.
+# Accumulates automatically as commands get approved; must never be committed
+# (a backlog_agent.py run once swept a whole session's worth of these into a
+# PR via `git add -u`, since this was tracked).
+.claude/settings.local.json
+
+# Backlog agent runtime artifacts
+agent/logs/
+.agent-worktrees/

@@ -9,8 +9,10 @@ Example:
 
 The agent will:
   1. Fetch the issue title and body from GitHub
-  2. Run Claude Code non-interactively to implement it
-  3. Commit the changes to a new branch and open a PR
+  2. Create an isolated git worktree on a fresh branch off main
+  3. Run Claude Code non-interactively, inside that worktree, to implement it
+  4. Commit the changes to the branch and open a PR
+  5. Remove the worktree
 
 Requirements:
   - ANTHROPIC_API_KEY set in environment
@@ -20,21 +22,77 @@ Requirements:
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import time
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+WORKTREE_PARENT = REPO_ROOT / ".agent-worktrees"
+LOG_DIR = REPO_ROOT / "agent" / "logs"
+
+# Env vars the spawned `claude` process actually needs. Everything else in
+# the launching shell — GH_FEEDBACK_TOKEN, SMTP_PASSWORD, GEMINI_API_KEY,
+# whatever a developer has exported for unrelated local tooling — is
+# deliberately withheld. The agent runs with broad Bash/Edit/Write grants and
+# no human review until after it pushes; it has no legitimate use for those
+# credentials, and a misdirected run must not be able to reach real external
+# APIs with them. (This is exactly how issues #51/#52 on this repo happened:
+# a local agent run inherited a real GH_FEEDBACK_TOKEN and the test suite's
+# safety guard hadn't landed yet.)
+_ENV_ALLOWLIST_EXACT = {
+    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM",
+    "ANTHROPIC_API_KEY", "GH_TOKEN",
+}
+_ENV_ALLOWLIST_PREFIXES = ("CLAUDE_",)
+
+
+def sanitized_env(source_env: dict) -> dict:
+    """Build the env for the spawned `claude` process from an allowlist,
+    rather than passing the launching shell's full environment through."""
+    return {
+        k: v for k, v in source_env.items()
+        if k in _ENV_ALLOWLIST_EXACT or k.startswith(_ENV_ALLOWLIST_PREFIXES)
+    }
 
 
 def get_issue(issue_number: int) -> dict:
     result = subprocess.run(
         ["gh", "issue", "view", str(issue_number),
          "--json", "number,title,body,labels"],
-        capture_output=True, text=True, check=True,
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
     )
     return json.loads(result.stdout)
 
 
-def run_agent(issue: dict) -> bool:
-    prompt = f"""You are a software engineer implementing a feature from the GitHub issue backlog.
+def make_worktree(branch: str) -> Path:
+    """Create an isolated git worktree on a fresh branch off main.
+
+    Running the agent directly in the live checkout risks colliding with
+    whatever else is happening there — an interactive session, another
+    agent run, uncommitted work. The worktree gives this run its own
+    working tree and index, sharing only the repo's object store."""
+    worktree_path = WORKTREE_PARENT / branch.replace("/", "-")
+    if worktree_path.exists():
+        shutil.rmtree(worktree_path)
+    WORKTREE_PARENT.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "worktree", "add", "-b", branch, str(worktree_path), "main"],
+        cwd=REPO_ROOT, check=True,
+    )
+    return worktree_path
+
+
+def remove_worktree(worktree_path: Path) -> None:
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(worktree_path)],
+        cwd=REPO_ROOT, check=False,
+    )
+
+
+def build_prompt(issue: dict) -> str:
+    return f"""You are a software engineer implementing a feature from the GitHub issue backlog.
 
 Issue #{issue['number']}: {issue['title']}
 
@@ -49,7 +107,22 @@ Follow these steps:
 4. Run `python -m pytest tests/ -q` and fix any failures before finishing.
 5. Do NOT commit, push, or open a PR — the workflow handles that.
 
+This is a fully non-interactive, unattended run. Nobody is available to
+answer questions until AFTER you finish and a PR is opened for human
+review — so if you reach a genuine design decision (e.g. a choice of
+abstraction, a tradeoff between approaches), do NOT stop and ask. Pick
+the most reasonable option yourself and implement it completely. Explain
+what you chose, why, and what alternative(s) you considered in your
+final summary — that summary is included directly in the PR description,
+which is where a human actually reviews and can push back or redirect.
+A finished implementation with a documented judgment call is far more
+useful here than a partial one waiting on a question nobody can answer.
+
 Be thorough. Follow the design guidelines in CLAUDE.md exactly."""
+
+
+def run_agent(issue: dict, worktree: Path) -> tuple[bool, str]:
+    prompt = build_prompt(issue)
 
     print(f"\n→ Running Claude agent on issue #{issue['number']}: {issue['title']}\n")
 
@@ -61,14 +134,24 @@ Be thorough. Follow the design guidelines in CLAUDE.md exactly."""
             "--permission-mode", "acceptEdits",
             "--output-format", "json",
         ],
-        cwd=os.getcwd(),
+        cwd=worktree,
+        env=sanitized_env(dict(os.environ)),
         text=True,
         capture_output=True,
     )
 
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f"issue-{issue['number']}-{int(time.time())}.log"
+    log_path.write_text(
+        f"=== stdout ===\n{proc.stdout}\n\n=== stderr ===\n{proc.stderr}\n"
+    )
+    print(f"Full transcript: {log_path}")
+
+    summary = ""
     try:
         output = json.loads(proc.stdout)
-        print(output.get("result", "").strip())
+        summary = output.get("result", "").strip()
+        print(summary)
         cost = output.get("total_cost_usd")
         if cost:
             print(f"\nAgent cost: ${cost:.4f}")
@@ -77,26 +160,42 @@ Be thorough. Follow the design guidelines in CLAUDE.md exactly."""
 
     if proc.returncode != 0:
         print(f"\nAgent exited with error:\n{proc.stderr}", file=sys.stderr)
-        return False
+        return False, summary
 
-    return True
+    return True, summary
 
 
-def create_pr(issue: dict) -> None:
-    branch = f"agent/issue-{issue['number']}"
+_SUMMARY_MAX_CHARS = 6000
 
-    subprocess.run(["git", "checkout", "-b", branch], check=True)
 
+def build_pr_body(issue: dict, summary: str) -> str:
+    body = (
+        f"Implements #{issue['number']}\n\n"
+        f"Generated by the backlog agent. Please review before merging.\n\n"
+        f"**Checklist:**\n"
+        f"- [ ] Tests pass\n"
+        f"- [ ] Code follows project conventions\n"
+        f"- [ ] No unintended changes"
+    )
+    summary = summary.strip()
+    if not summary:
+        return body
+    if len(summary) > _SUMMARY_MAX_CHARS:
+        summary = summary[:_SUMMARY_MAX_CHARS] + "\n\n… (truncated — see full transcript in agent/logs/)"
+    return body + f"\n\n---\n\n**Agent's summary:**\n\n{summary}"
+
+
+def create_pr(issue: dict, worktree: Path, branch: str, summary: str = "") -> None:
     # Stage only modified tracked files + new files in code directories.
     # Never use -A — the repo has untracked mobile/, docs/, logs/ etc.
     # that must not be swept into agent PRs.
-    subprocess.run(["git", "add", "-u"], check=True)
+    subprocess.run(["git", "add", "-u"], cwd=worktree, check=True)
     for code_dir in ["pipeline", "tests", "web", "config", "agent"]:
-        if os.path.isdir(code_dir):
-            subprocess.run(["git", "add", code_dir], check=True)
+        if (worktree / code_dir).is_dir():
+            subprocess.run(["git", "add", code_dir], cwd=worktree, check=True)
 
     # Check if there's anything staged
-    diff_check = subprocess.run(["git", "diff", "--cached", "--quiet"])
+    diff_check = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=worktree)
     if diff_check.returncode == 0:
         print("Agent made no file changes — nothing to commit.")
         return
@@ -105,23 +204,16 @@ def create_pr(issue: dict) -> None:
         "git", "commit", "-m",
         f"Implement #{issue['number']}: {issue['title']}\n\n"
         f"Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
-    ], check=True)
+    ], cwd=worktree, check=True)
 
-    subprocess.run(["git", "push", "-u", "origin", branch], check=True)
+    subprocess.run(["git", "push", "-u", "origin", branch], cwd=worktree, check=True)
 
     subprocess.run([
         "gh", "pr", "create",
         "--title", f"[Agent] {issue['title']}",
-        "--body", (
-            f"Implements #{issue['number']}\n\n"
-            f"Generated by the backlog agent. Please review before merging.\n\n"
-            f"**Checklist:**\n"
-            f"- [ ] Tests pass\n"
-            f"- [ ] Code follows project conventions\n"
-            f"- [ ] No unintended changes"
-        ),
+        "--body", build_pr_body(issue, summary),
         "--base", "main",
-    ], check=True)
+    ], cwd=worktree, check=True)
 
     print(f"\n✓ PR opened for issue #{issue['number']}")
 
@@ -133,9 +225,13 @@ if __name__ == "__main__":
 
     issue_number = int(sys.argv[1])
     issue = get_issue(issue_number)
-    success = run_agent(issue)
+    branch = f"agent/issue-{issue_number}"
+    worktree = make_worktree(branch)
 
-    if not success:
-        sys.exit(1)
-
-    create_pr(issue)
+    try:
+        success, summary = run_agent(issue, worktree)
+        if not success:
+            sys.exit(1)
+        create_pr(issue, worktree, branch, summary)
+    finally:
+        remove_worktree(worktree)
