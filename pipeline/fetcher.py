@@ -1394,6 +1394,262 @@ class JSearchFetcher:
         return results
 
 
+class PayPalFetcher:
+    """Fetches jobs from PayPal via the Workday API.
+
+    List:  POST https://paypal.wd1.myworkdayjobs.com/wday/cxs/paypal/jobs/jobs
+    Detail: GET https://paypal.wd1.myworkdayjobs.com/wday/cxs/paypal/jobs{externalPath}
+    Description is only available on the detail endpoint. PayPal uses
+    "Manager, Software Engineering" naming rather than "Engineering Manager" —
+    see companies.yaml for the title_keywords override.
+    """
+
+    _LIST_URL = "https://paypal.wd1.myworkdayjobs.com/wday/cxs/paypal/jobs/jobs"
+    _DETAIL_BASE = "https://paypal.wd1.myworkdayjobs.com/wday/cxs/paypal/jobs"
+    _PAGE_SIZE = 20
+    _MAX_PAGES = 3  # cap at 60 results per keyword to avoid rate-limit hangs
+
+    def __init__(self, company_name: str = "PayPal"):
+        self.company_name = company_name
+
+    def fetch(self, preferences: dict) -> List[dict]:
+        seen_ids: set = set()
+        candidates = []
+        for keyword in preferences.get("title_keywords", ["Engineering Manager"]):
+            offset = 0
+            page = 0
+            while page < self._MAX_PAGES:
+                try:
+                    resp = requests.post(
+                        self._LIST_URL,
+                        json={"appliedFacets": {}, "limit": self._PAGE_SIZE, "offset": offset,
+                              "searchText": keyword},
+                        headers={"User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)",
+                                 "Content-Type": "application/json", "Accept": "application/json"},
+                        timeout=15,
+                    )
+                    resp.raise_for_status()
+                except Exception as exc:
+                    logger.warning("PayPal list fetch failed for '%s': %s", keyword, exc)
+                    break
+                data = resp.json()
+                postings = data.get("jobPostings", [])
+                if not postings:
+                    break
+                for posting in postings:
+                    title = posting.get("title", "")
+                    ext_path = posting.get("externalPath", "")
+                    job_id = ext_path.split("_")[-1] if "_" in ext_path else ext_path
+                    if job_id in seen_ids or not _matches_title(title, preferences):
+                        continue
+                    location = posting.get("locationsText", "")
+                    if not _matches_location(location, preferences):
+                        logger.debug("PayPal excluded by location: %s — %s", title, location)
+                        continue
+                    seen_ids.add(job_id)
+                    candidates.append({
+                        "job_id": job_id,
+                        "title": title,
+                        "location": location,
+                        "ext_path": ext_path,
+                        "url": f"{self._DETAIL_BASE}{ext_path}",
+                    })
+                if len(postings) < self._PAGE_SIZE:
+                    break
+                offset += self._PAGE_SIZE
+                page += 1
+
+        results = []
+        for c in candidates:
+            try:
+                detail = requests.get(
+                    c["url"],
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)",
+                             "Accept": "application/json"},
+                    timeout=15,
+                )
+                detail.raise_for_status()
+                info = detail.json().get("jobPostingInfo", {})
+                description = _strip_html(info.get("jobDescription", ""))
+            except Exception as exc:
+                logger.warning("PayPal detail fetch failed for %s: %s", c["job_id"], exc)
+                description = ""
+            results.append({
+                "job_id": c["job_id"],
+                "company": self.company_name,
+                "title": c["title"],
+                "location": c["location"],
+                "url": c["url"],
+                "apply_url": c["url"],
+                "description": description,
+            })
+
+        logger.info("PayPal: %d matching jobs found", len(results))
+        return results
+
+
+class GitHubFetcher:
+    """Fetches jobs from GitHub's careers site (github.careers, Jibe/iCIMS-backed).
+
+    List: GET https://www.github.careers/api/jobs?page={n}&sortBy=relevance&
+          descending=false&internal=false
+    The `q` query param does not filter server-side — every call returns the
+    full open-jobs set, paginated 10 per page. The full description is
+    included inline, so no separate detail call is needed.
+    """
+
+    _LIST_URL = "https://www.github.careers/api/jobs"
+    _PAGE_SIZE = 10
+    _MAX_PAGES = 20  # cap at 200 jobs
+
+    def __init__(self, company_name: str = "GitHub"):
+        self.company_name = company_name
+
+    def fetch(self, preferences: dict) -> List[dict]:
+        results = []
+        seen_ids: set = set()
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)", "Accept": "application/json"}
+        page = 1
+        while page <= self._MAX_PAGES:
+            try:
+                resp = requests.get(
+                    self._LIST_URL,
+                    params={"page": page, "sortBy": "relevance", "descending": "false", "internal": "false"},
+                    headers=headers,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+            except Exception as exc:
+                logger.warning("GitHub list fetch failed on page %d: %s", page, exc)
+                break
+            jobs = resp.json().get("jobs", [])
+            if not jobs:
+                break
+            for entry in jobs:
+                d = entry.get("data", {})
+                job_id = str(d.get("req_id", ""))
+                title = d.get("title", "")
+                if not job_id or job_id in seen_ids or not _matches_title(title, preferences):
+                    continue
+                location = d.get("location_name") or ""
+                if not _matches_location(location, preferences):
+                    logger.debug("GitHub excluded by location: %s — %s", title, location)
+                    continue
+                seen_ids.add(job_id)
+                apply_url = d.get("apply_url", "")
+                results.append({
+                    "job_id": job_id,
+                    "company": self.company_name,
+                    "title": title,
+                    "location": location,
+                    "url": apply_url,
+                    "apply_url": apply_url,
+                    "description": _strip_html(d.get("description", "")),
+                })
+            if len(jobs) < self._PAGE_SIZE:
+                break
+            page += 1
+
+        logger.info("GitHub: %d matching jobs found", len(results))
+        return results
+
+
+class RipplingFetcher:
+    """Fetches jobs from Rippling, which dogfoods its own ATS product.
+
+    List:  POST https://{app_id}-dsn.algolia.net/1/indexes/*/queries
+           Uses Algolia's public search-only API key — read-only and meant to
+           be embedded client-side, not a secret.
+    Detail: GET https://ats.rippling.com/rippling/jobs/{job_id} — the full
+            description (role + company blurb) is embedded in the page's
+            __NEXT_DATA__ JSON, not available from the search index itself.
+    """
+
+    _ALGOLIA_URL = "https://6fnax3tbef-dsn.algolia.net/1/indexes/*/queries"
+    _ALGOLIA_APP_ID = "6FNAX3TBEF"
+    _ALGOLIA_API_KEY = "416caa4690f002ff6fe4a2097623640b"
+    _ALGOLIA_INDEX = "careers_en-US_production"
+    _HITS_PER_PAGE = 50
+    _NEXT_DATA_RE = re.compile(
+        r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.DOTALL
+    )
+
+    def __init__(self, company_name: str = "Rippling"):
+        self.company_name = company_name
+
+    def fetch(self, preferences: dict) -> List[dict]:
+        seen_ids: set = set()
+        candidates = []
+        headers = {
+            "x-algolia-application-id": self._ALGOLIA_APP_ID,
+            "x-algolia-api-key": self._ALGOLIA_API_KEY,
+            "Content-Type": "application/json",
+        }
+        for keyword in preferences.get("title_keywords", ["Engineering Manager"]):
+            body = {"requests": [{
+                "indexName": self._ALGOLIA_INDEX,
+                "query": keyword,
+                "hitsPerPage": self._HITS_PER_PAGE,
+            }]}
+            try:
+                resp = requests.post(self._ALGOLIA_URL, headers=headers, json=body, timeout=15)
+                resp.raise_for_status()
+            except Exception as exc:
+                logger.warning("Rippling search failed for '%s': %s", keyword, exc)
+                continue
+            hits = (resp.json().get("results") or [{}])[0].get("hits", [])
+            for hit in hits:
+                job_id = str(hit.get("jobId", ""))
+                title = hit.get("name", "")
+                if not job_id or job_id in seen_ids or not _matches_title(title, preferences):
+                    continue
+                locations = hit.get("locationNames") or []
+                location = ", ".join(locations) or ("Remote" if hit.get("isRemote") else "")
+                if not _matches_location(location, preferences):
+                    logger.debug("Rippling excluded by location: %s — %s", title, location)
+                    continue
+                seen_ids.add(job_id)
+                candidates.append({
+                    "job_id": job_id,
+                    "title": title,
+                    "location": location,
+                    "url": hit.get("url", f"https://ats.rippling.com/rippling/jobs/{job_id}"),
+                })
+
+        results = []
+        for c in candidates:
+            description = ""
+            try:
+                detail = requests.get(
+                    c["url"],
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; JobPipeline/1.0)"},
+                    timeout=15,
+                )
+                detail.raise_for_status()
+                match = self._NEXT_DATA_RE.search(detail.text)
+                if match:
+                    next_data = json.loads(match.group(1))
+                    job_post = (next_data.get("props", {}).get("pageProps", {})
+                                .get("apiData", {}).get("jobPost", {}))
+                    desc = job_post.get("description", {}) or {}
+                    parts = [desc.get("role", ""), desc.get("company", "")]
+                    description = _strip_html("".join(p for p in parts if p))
+            except Exception as exc:
+                logger.warning("Rippling detail fetch failed for %s: %s", c["job_id"], exc)
+            results.append({
+                "job_id": c["job_id"],
+                "company": self.company_name,
+                "title": c["title"],
+                "location": c["location"],
+                "url": c["url"],
+                "apply_url": c["url"],
+                "description": description,
+            })
+
+        logger.info("Rippling: %d matching jobs found", len(results))
+        return results
+
+
 _FETCHER_MAP = {
     "greenhouse": GreenhouseFetcher,
     "ashby": AshbyFetcher,
@@ -1409,6 +1665,9 @@ _FETCHER_MAP = {
     "jsearch": JSearchFetcher,
     "apple": AppleFetcher,
     "google": GoogleFetcher,
+    "paypal": PayPalFetcher,
+    "github": GitHubFetcher,
+    "rippling": RipplingFetcher,
 }
 
 _PLAYWRIGHT_ATS = {"meta"}

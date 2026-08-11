@@ -7,6 +7,7 @@ from datetime import date
 from pipeline.fetcher import (
     GreenhouseFetcher, UberFetcher, MicrosoftFetcher, WalmartFetcher,
     CapitalOneFetcher, JSearchFetcher, AppleFetcher, GoogleFetcher,
+    PayPalFetcher, GitHubFetcher, RipplingFetcher,
     fetch_all_companies, _matches_location, _build_company_prefs,
 )
 import pipeline.fetcher as fetcher_mod
@@ -1495,3 +1496,607 @@ class TestGoogleFetcher:
             GoogleFetcher().fetch(GOOGLE_PREFS)
         assert "page" not in call_params[0]
         assert call_params[1]["page"] == 2
+
+
+# ── PayPalFetcher ─────────────────────────────────────────────────────────────
+# PayPal is a Workday tenant (paypal.wd1.myworkdayjobs.com, site "jobs") that
+# uses "Manager, Software Engineering" naming instead of "Engineering Manager".
+
+PAYPAL_PREFS = {
+    "title_keywords": ["Manager, Software Engineering", "Senior Manager, Software Engineering"],
+    "title_exclude_keywords": ["Software Engineer"],
+    "excluded_location_keywords": ["Canada"],
+}
+
+
+def _paypal_posting(title, ext_path, location):
+    return {"title": title, "externalPath": ext_path, "locationsText": location}
+
+
+def _paypal_search_response(postings):
+    return {"total": len(postings), "jobPostings": postings}
+
+
+def _paypal_search_mock(postings, raises=None):
+    def side_effect(*args, **kwargs):
+        mock = MagicMock()
+        mock.raise_for_status = MagicMock()
+        if raises:
+            mock.raise_for_status.side_effect = raises
+        else:
+            mock.json.return_value = _paypal_search_response(postings)
+        return mock
+    return side_effect
+
+
+def _paypal_detail_mock(description_html="<p>Lead a team.</p>", raises=None):
+    def side_effect(*args, **kwargs):
+        mock = MagicMock()
+        mock.raise_for_status = MagicMock()
+        if raises:
+            mock.raise_for_status.side_effect = raises
+        else:
+            mock.json.return_value = {"jobPostingInfo": {"jobDescription": description_html}}
+        return mock
+    return side_effect
+
+
+@pytest.fixture
+def paypal_fetcher():
+    return PayPalFetcher(company_name="PayPal")
+
+
+class TestPayPalFetcher:
+    def test_filters_by_title_keywords(self, paypal_fetcher):
+        postings = [
+            _paypal_posting("Manager, Software Engineering", "/job/San-Jose-CA/Manager_R001",
+                             "San Jose, California, United States of America"),
+            _paypal_posting("Sr Software Engineer", "/job/San-Jose-CA/Engineer_R002",
+                             "San Jose, California, United States of America"),
+        ]
+        with patch("pipeline.fetcher.requests.post", side_effect=_paypal_search_mock(postings)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_paypal_detail_mock()):
+            jobs = paypal_fetcher.fetch(PAYPAL_PREFS)
+        titles = [j["title"] for j in jobs]
+        assert "Manager, Software Engineering" in titles
+        assert "Sr Software Engineer" not in titles
+
+    def test_returns_normalized_job_dicts(self, paypal_fetcher):
+        postings = [_paypal_posting("Manager, Software Engineering", "/job/San-Jose-CA/Manager_R001",
+                                     "San Jose, California, United States of America")]
+        with patch("pipeline.fetcher.requests.post", side_effect=_paypal_search_mock(postings)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_paypal_detail_mock()):
+            jobs = paypal_fetcher.fetch(PAYPAL_PREFS)
+        assert len(jobs) == 1
+        job = jobs[0]
+        for key in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
+            assert key in job, f"Missing key: {key}"
+        assert job["company"] == "PayPal"
+        assert job["job_id"] == "R001"
+
+    def test_strips_html_from_description(self, paypal_fetcher):
+        postings = [_paypal_posting("Manager, Software Engineering", "/job/San-Jose-CA/Manager_R001",
+                                     "San Jose, California, United States of America")]
+        desc_html = "<p>Lead payments engineering.</p><ul><li>5+ years managing engineers</li></ul>"
+        with patch("pipeline.fetcher.requests.post", side_effect=_paypal_search_mock(postings)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_paypal_detail_mock(desc_html)):
+            jobs = paypal_fetcher.fetch(PAYPAL_PREFS)
+        assert "<p>" not in jobs[0]["description"]
+        assert "<ul>" not in jobs[0]["description"]
+        assert "Lead payments engineering." in jobs[0]["description"]
+
+    def test_returns_empty_on_search_http_error(self, paypal_fetcher):
+        with patch("pipeline.fetcher.requests.post",
+                   side_effect=_paypal_search_mock([], raises=Exception("HTTP 500"))):
+            jobs = paypal_fetcher.fetch(PAYPAL_PREFS)
+        assert jobs == []
+
+    def test_description_empty_on_detail_error(self, paypal_fetcher):
+        postings = [_paypal_posting("Manager, Software Engineering", "/job/San-Jose-CA/Manager_R001",
+                                     "San Jose, California, United States of America")]
+        with patch("pipeline.fetcher.requests.post", side_effect=_paypal_search_mock(postings)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_paypal_detail_mock(raises=Exception("HTTP 429"))):
+            jobs = paypal_fetcher.fetch(PAYPAL_PREFS)
+        assert len(jobs) == 1
+        assert jobs[0]["description"] == ""
+
+    def test_deduplicates_across_keywords(self, paypal_fetcher):
+        postings = [_paypal_posting("Manager, Software Engineering", "/job/San-Jose-CA/Manager_R001",
+                                     "San Jose, California, United States of America")]
+        prefs = {**PAYPAL_PREFS,
+                 "title_keywords": ["Manager, Software Engineering", "Senior Manager, Software Engineering"]}
+        with patch("pipeline.fetcher.requests.post", side_effect=_paypal_search_mock(postings)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_paypal_detail_mock()):
+            jobs = paypal_fetcher.fetch(prefs)
+        assert len([j for j in jobs if j["job_id"] == "R001"]) == 1
+
+    def test_filters_by_location(self, paypal_fetcher):
+        postings = [
+            _paypal_posting("Manager, Software Engineering", "/job/NY/Manager_R001",
+                             "New York, New York, United States of America"),
+            _paypal_posting("Manager, Software Engineering", "/job/Toronto/Manager_R002",
+                             "Toronto, Ontario, Canada"),
+        ]
+        with patch("pipeline.fetcher.requests.post", side_effect=_paypal_search_mock(postings)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_paypal_detail_mock()):
+            jobs = paypal_fetcher.fetch(PAYPAL_PREFS)
+        locations = [j["location"] for j in jobs]
+        assert all("New York" in loc for loc in locations)
+        assert not any("Toronto" in loc for loc in locations)
+
+    def test_url_points_to_workday(self, paypal_fetcher):
+        postings = [_paypal_posting("Manager, Software Engineering", "/job/San-Jose-CA/Manager_R001",
+                                     "San Jose, California, United States of America")]
+        with patch("pipeline.fetcher.requests.post", side_effect=_paypal_search_mock(postings)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_paypal_detail_mock()):
+            jobs = paypal_fetcher.fetch(PAYPAL_PREFS)
+        assert "paypal.wd1.myworkdayjobs.com" in jobs[0]["url"]
+        assert jobs[0]["apply_url"] == jobs[0]["url"]
+
+    def test_single_page_when_results_fewer_than_page_size(self, paypal_fetcher):
+        postings = [_paypal_posting("Manager, Software Engineering", "/job/x/Manager_R1",
+                                     "San Jose, California, United States of America")]
+        with patch("pipeline.fetcher.requests.post", side_effect=_paypal_search_mock(postings)) as mock_post, \
+             patch("pipeline.fetcher.requests.get", side_effect=_paypal_detail_mock()):
+            paypal_fetcher.fetch({**PAYPAL_PREFS, "title_keywords": ["Manager, Software Engineering"]})
+        assert mock_post.call_count == 1
+
+    def test_stops_pagination_when_page_returns_empty(self, paypal_fetcher):
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            mock = MagicMock()
+            mock.raise_for_status = MagicMock()
+            if call_count == 1:
+                postings = [_paypal_posting("Manager, Software Engineering", f"/job/x/Manager_R{i}",
+                                             "San Jose, California, United States of America")
+                            for i in range(20)]
+            else:
+                postings = []
+            mock.json.return_value = _paypal_search_response(postings)
+            return mock
+
+        with patch("pipeline.fetcher.requests.post", side_effect=side_effect), \
+             patch("pipeline.fetcher.requests.get", side_effect=_paypal_detail_mock()):
+            paypal_fetcher.fetch({**PAYPAL_PREFS, "title_keywords": ["Manager, Software Engineering"]})
+        assert call_count == 2
+
+    def test_search_payload_includes_keyword(self, paypal_fetcher):
+        with patch("pipeline.fetcher.requests.post", side_effect=_paypal_search_mock([])) as mock_post, \
+             patch("pipeline.fetcher.requests.get", side_effect=_paypal_detail_mock()):
+            paypal_fetcher.fetch({**PAYPAL_PREFS, "title_keywords": ["Manager, Software Engineering"]})
+        sent = mock_post.call_args.kwargs["json"]
+        assert sent["searchText"] == "Manager, Software Engineering"
+
+
+def _load_paypal_company_config():
+    with open(_COMPANIES_YAML_PATH) as f:
+        config = yaml.safe_load(f)
+    companies = config.get("companies", [])
+    return next((c for c in companies if c.get("ats") == "paypal"), None)
+
+
+class TestPayPalFetcherIntegration:
+    """Verify the full path: companies.yaml -> fetch_all_companies -> PayPalFetcher."""
+
+    def test_companies_yaml_has_paypal_entry(self):
+        pp = _load_paypal_company_config()
+        assert pp is not None, "companies.yaml must have an entry with ats: paypal"
+
+    def test_companies_yaml_paypal_has_title_keywords(self):
+        pp = _load_paypal_company_config()
+        assert pp is not None
+        assert "title_keywords" in pp, "PayPal entry must define title_keywords"
+        assert any("Manager" in kw for kw in pp["title_keywords"]), (
+            "At least one keyword should match PayPal's naming convention"
+        )
+
+    def test_fetch_all_companies_passes_yaml_keywords_to_fetcher(self):
+        pp = _load_paypal_company_config()
+        assert pp is not None
+        expected_keywords = pp["title_keywords"]
+        captured_prefs = {}
+
+        def capture_fetch(prefs):
+            captured_prefs.update(prefs)
+            return []
+
+        with patch("pipeline.fetcher.PayPalFetcher.fetch", side_effect=capture_fetch):
+            fetch_all_companies([pp], PREFERENCES)
+
+        assert captured_prefs.get("title_keywords") == expected_keywords
+
+    def test_fetch_all_companies_returns_paypal_jobs(self):
+        pp = _load_paypal_company_config()
+        assert pp is not None
+        fake_job = {
+            "job_id": "R0137183",
+            "company": "PayPal",
+            "title": "Manager, Software Engineering",
+            "location": "San Jose, California, United States of America",
+            "url": "https://paypal.wd1.myworkdayjobs.com/wday/cxs/paypal/jobs/job/San-Jose/Manager_R0137183",
+            "apply_url": "https://paypal.wd1.myworkdayjobs.com/wday/cxs/paypal/jobs/job/San-Jose/Manager_R0137183",
+            "description": "Lead engineering teams.",
+        }
+
+        with patch("pipeline.fetcher.PayPalFetcher.fetch", return_value=[fake_job]):
+            jobs = fetch_all_companies([pp], PREFERENCES)
+
+        pp_jobs = [j for j in jobs if j["company"] == "PayPal"]
+        assert len(pp_jobs) == 1
+        assert pp_jobs[0]["job_id"] == "R0137183"
+
+
+# ── GitHubFetcher ─────────────────────────────────────────────────────────────
+# GitHub's careers site (github.careers) exposes a public JSON API that returns
+# all open jobs (unfiltered by the `q` param) with the full description inline.
+
+GITHUB_PREFS = {
+    "title_keywords": ["Engineering Manager", "Staff Engineering Manager"],
+    "title_exclude_keywords": ["Software Engineer"],
+    "excluded_location_keywords": ["India"],
+}
+
+
+def _github_job(req_id, title, location="US Remote", description_html="<p>Build things.</p>", apply_url=None):
+    apply_url = apply_url or f"https://globalcareers-githubinc.icims.com/jobs/{req_id}/login"
+    return {"data": {
+        "req_id": req_id,
+        "title": title,
+        "location_name": location,
+        "description": description_html,
+        "apply_url": apply_url,
+    }}
+
+
+def _github_list_response(jobs):
+    return {"jobs": jobs, "totalCount": len(jobs)}
+
+
+def _github_list_mock(jobs, raises=None):
+    def side_effect(*args, **kwargs):
+        mock = MagicMock()
+        mock.raise_for_status = MagicMock()
+        if raises:
+            mock.raise_for_status.side_effect = raises
+        else:
+            mock.json.return_value = _github_list_response(jobs)
+        return mock
+    return side_effect
+
+
+@pytest.fixture
+def github_fetcher():
+    return GitHubFetcher(company_name="GitHub")
+
+
+class TestGitHubFetcher:
+    def test_filters_by_title_keywords(self, github_fetcher):
+        jobs = [
+            _github_job("5677", "Staff Engineering Manager, Copilot Models"),
+            _github_job("5678", "Staff Software Engineer"),
+        ]
+        with patch("pipeline.fetcher.requests.get", side_effect=_github_list_mock(jobs)):
+            result = github_fetcher.fetch(GITHUB_PREFS)
+        titles = [j["title"] for j in result]
+        assert "Staff Engineering Manager, Copilot Models" in titles
+        assert "Staff Software Engineer" not in titles
+
+    def test_returns_normalized_job_dicts(self, github_fetcher):
+        jobs = [_github_job("5677", "Engineering Manager, Search")]
+        with patch("pipeline.fetcher.requests.get", side_effect=_github_list_mock(jobs)):
+            result = github_fetcher.fetch(GITHUB_PREFS)
+        assert len(result) == 1
+        job = result[0]
+        for key in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
+            assert key in job, f"Missing key: {key}"
+        assert job["company"] == "GitHub"
+        assert job["job_id"] == "5677"
+
+    def test_strips_html_from_description(self, github_fetcher):
+        jobs = [_github_job("5677", "Engineering Manager, Search",
+                             description_html="<p>Lead search infra.</p><ul><li>7+ years experience</li></ul>")]
+        with patch("pipeline.fetcher.requests.get", side_effect=_github_list_mock(jobs)):
+            result = github_fetcher.fetch(GITHUB_PREFS)
+        assert "<p>" not in result[0]["description"]
+        assert "<ul>" not in result[0]["description"]
+        assert "Lead search infra." in result[0]["description"]
+
+    def test_returns_empty_on_list_http_error(self, github_fetcher):
+        with patch("pipeline.fetcher.requests.get",
+                   side_effect=_github_list_mock([], raises=Exception("HTTP 500"))):
+            result = github_fetcher.fetch(GITHUB_PREFS)
+        assert result == []
+
+    def test_filters_by_location(self, github_fetcher):
+        jobs = [
+            _github_job("1", "Engineering Manager, Search", location="US Remote"),
+            _github_job("2", "Engineering Manager, Platform", location="Bangalore, India"),
+        ]
+        with patch("pipeline.fetcher.requests.get", side_effect=_github_list_mock(jobs)):
+            result = github_fetcher.fetch(GITHUB_PREFS)
+        locations = [j["location"] for j in result]
+        assert all("India" not in loc for loc in locations)
+
+    def test_url_points_to_apply_url(self, github_fetcher):
+        jobs = [_github_job("5677", "Engineering Manager, Search")]
+        with patch("pipeline.fetcher.requests.get", side_effect=_github_list_mock(jobs)):
+            result = github_fetcher.fetch(GITHUB_PREFS)
+        assert "icims.com" in result[0]["url"]
+        assert result[0]["apply_url"] == result[0]["url"]
+
+    def test_paginates_until_short_page(self, github_fetcher):
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            mock = MagicMock()
+            mock.raise_for_status = MagicMock()
+            if call_count == 1:
+                jobs = [_github_job(str(i), "Engineering Manager, Search") for i in range(10)]
+            else:
+                jobs = []
+            mock.json.return_value = _github_list_response(jobs)
+            return mock
+
+        with patch("pipeline.fetcher.requests.get", side_effect=side_effect):
+            github_fetcher.fetch(GITHUB_PREFS)
+        assert call_count == 2
+
+    def test_deduplicates_by_req_id(self, github_fetcher):
+        jobs = [_github_job("5677", "Engineering Manager, Search"), _github_job("5677", "Engineering Manager, Search")]
+        with patch("pipeline.fetcher.requests.get", side_effect=_github_list_mock(jobs)):
+            result = github_fetcher.fetch(GITHUB_PREFS)
+        assert len(result) == 1
+
+
+def _load_github_company_config():
+    with open(_COMPANIES_YAML_PATH) as f:
+        config = yaml.safe_load(f)
+    companies = config.get("companies", [])
+    return next((c for c in companies if c.get("ats") == "github"), None)
+
+
+class TestGitHubFetcherIntegration:
+    """Verify the full path: companies.yaml -> fetch_all_companies -> GitHubFetcher."""
+
+    def test_companies_yaml_has_github_entry(self):
+        gh = _load_github_company_config()
+        assert gh is not None, "companies.yaml must have an entry with ats: github"
+
+    def test_fetch_all_companies_returns_github_jobs(self):
+        gh = _load_github_company_config()
+        assert gh is not None
+        fake_job = {
+            "job_id": "5677",
+            "company": "GitHub",
+            "title": "Staff Engineering Manager, Copilot Models",
+            "location": "US Remote",
+            "url": "https://globalcareers-githubinc.icims.com/jobs/5677/login",
+            "apply_url": "https://globalcareers-githubinc.icims.com/jobs/5677/login",
+            "description": "Lead the Copilot Models team.",
+        }
+
+        with patch("pipeline.fetcher.GitHubFetcher.fetch", return_value=[fake_job]):
+            jobs = fetch_all_companies([gh], PREFERENCES)
+
+        gh_jobs = [j for j in jobs if j["company"] == "GitHub"]
+        assert len(gh_jobs) == 1
+        assert gh_jobs[0]["job_id"] == "5677"
+
+
+# ── RipplingFetcher ───────────────────────────────────────────────────────────
+# Rippling dogfoods its own ATS product (ats.rippling.com). Listings are
+# queryable via a public Algolia search-only key; the full description is
+# embedded in the job detail page's __NEXT_DATA__ JSON blob.
+
+RIPPLING_PREFS = {
+    "title_keywords": ["Engineering Manager"],
+    "title_exclude_keywords": ["Software Engineer"],
+    "excluded_location_keywords": ["India"],
+}
+
+
+def _rippling_hit(job_id, title, locations=None, is_remote=False):
+    locations = locations if locations is not None else ["San Francisco, CA"]
+    return {
+        "jobId": job_id,
+        "name": title,
+        "locationNames": locations,
+        "isRemote": is_remote,
+        "url": f"https://ats.rippling.com/rippling/jobs/{job_id}",
+    }
+
+
+def _rippling_search_response(hits):
+    return {"results": [{"hits": hits}]}
+
+
+def _rippling_search_mock(hits, raises=None):
+    def side_effect(*args, **kwargs):
+        mock = MagicMock()
+        mock.raise_for_status = MagicMock()
+        if raises:
+            mock.raise_for_status.side_effect = raises
+        else:
+            mock.json.return_value = _rippling_search_response(hits)
+        return mock
+    return side_effect
+
+
+def _rippling_detail_html(role_html="<p>Lead engineering.</p>", company_html="<p>About Rippling.</p>"):
+    next_data = {
+        "props": {
+            "pageProps": {
+                "apiData": {
+                    "jobPost": {
+                        "description": {"role": role_html, "company": company_html},
+                    }
+                }
+            }
+        }
+    }
+    return (
+        "<html><head></head><body>"
+        f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(next_data)}</script>'
+        "</body></html>"
+    )
+
+
+def _rippling_detail_mock(role_html="<p>Lead engineering.</p>", company_html="<p>About Rippling.</p>", raises=None):
+    def side_effect(*args, **kwargs):
+        mock = MagicMock()
+        mock.raise_for_status = MagicMock()
+        if raises:
+            mock.raise_for_status.side_effect = raises
+        else:
+            mock.text = _rippling_detail_html(role_html, company_html)
+        return mock
+    return side_effect
+
+
+@pytest.fixture
+def rippling_fetcher():
+    return RipplingFetcher(company_name="Rippling")
+
+
+class TestRipplingFetcher:
+    def test_filters_by_title_keywords(self, rippling_fetcher):
+        hits = [
+            _rippling_hit("job1", "Engineering Manager, Platform"),
+            _rippling_hit("job2", "Software Engineer"),
+        ]
+        with patch("pipeline.fetcher.requests.post", side_effect=_rippling_search_mock(hits)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_rippling_detail_mock()):
+            result = rippling_fetcher.fetch(RIPPLING_PREFS)
+        titles = [j["title"] for j in result]
+        assert "Engineering Manager, Platform" in titles
+        assert "Software Engineer" not in titles
+
+    def test_returns_normalized_job_dicts(self, rippling_fetcher):
+        hits = [_rippling_hit("job1", "Engineering Manager, Platform")]
+        with patch("pipeline.fetcher.requests.post", side_effect=_rippling_search_mock(hits)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_rippling_detail_mock()):
+            result = rippling_fetcher.fetch(RIPPLING_PREFS)
+        assert len(result) == 1
+        job = result[0]
+        for key in ("job_id", "company", "title", "location", "url", "apply_url", "description"):
+            assert key in job, f"Missing key: {key}"
+        assert job["company"] == "Rippling"
+        assert job["job_id"] == "job1"
+
+    def test_combines_role_and_company_description(self, rippling_fetcher):
+        hits = [_rippling_hit("job1", "Engineering Manager, Platform")]
+        with patch("pipeline.fetcher.requests.post", side_effect=_rippling_search_mock(hits)), \
+             patch("pipeline.fetcher.requests.get",
+                   side_effect=_rippling_detail_mock(role_html="<p>Own the platform roadmap.</p>",
+                                                      company_html="<p>Rippling unifies HR and IT.</p>")):
+            result = rippling_fetcher.fetch(RIPPLING_PREFS)
+        description = result[0]["description"]
+        assert "<p>" not in description
+        assert "Own the platform roadmap." in description
+        assert "Rippling unifies HR and IT." in description
+
+    def test_returns_empty_on_search_http_error(self, rippling_fetcher):
+        with patch("pipeline.fetcher.requests.post",
+                   side_effect=_rippling_search_mock([], raises=Exception("HTTP 500"))):
+            result = rippling_fetcher.fetch(RIPPLING_PREFS)
+        assert result == []
+
+    def test_description_empty_on_detail_error(self, rippling_fetcher):
+        hits = [_rippling_hit("job1", "Engineering Manager, Platform")]
+        with patch("pipeline.fetcher.requests.post", side_effect=_rippling_search_mock(hits)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_rippling_detail_mock(raises=Exception("HTTP 429"))):
+            result = rippling_fetcher.fetch(RIPPLING_PREFS)
+        assert len(result) == 1
+        assert result[0]["description"] == ""
+
+    def test_deduplicates_across_keywords(self, rippling_fetcher):
+        hits = [_rippling_hit("job1", "Engineering Manager, Platform")]
+        prefs = {**RIPPLING_PREFS, "title_keywords": ["Engineering Manager", "Senior Engineering Manager"]}
+        with patch("pipeline.fetcher.requests.post", side_effect=_rippling_search_mock(hits)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_rippling_detail_mock()):
+            result = rippling_fetcher.fetch(prefs)
+        assert len([j for j in result if j["job_id"] == "job1"]) == 1
+
+    def test_filters_by_location(self, rippling_fetcher):
+        hits = [
+            _rippling_hit("job1", "Engineering Manager, Platform", locations=["New York, NY"]),
+            _rippling_hit("job2", "Engineering Manager, Platform", locations=["Bangalore, India"]),
+        ]
+        with patch("pipeline.fetcher.requests.post", side_effect=_rippling_search_mock(hits)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_rippling_detail_mock()):
+            result = rippling_fetcher.fetch(RIPPLING_PREFS)
+        locations = [j["location"] for j in result]
+        assert all("India" not in loc for loc in locations)
+
+    def test_url_points_to_ats_rippling(self, rippling_fetcher):
+        hits = [_rippling_hit("job1", "Engineering Manager, Platform")]
+        with patch("pipeline.fetcher.requests.post", side_effect=_rippling_search_mock(hits)), \
+             patch("pipeline.fetcher.requests.get", side_effect=_rippling_detail_mock()):
+            result = rippling_fetcher.fetch(RIPPLING_PREFS)
+        assert "ats.rippling.com" in result[0]["url"]
+        assert result[0]["apply_url"] == result[0]["url"]
+
+    def test_returns_empty_description_when_next_data_missing(self, rippling_fetcher):
+        hits = [_rippling_hit("job1", "Engineering Manager, Platform")]
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = "<html><body>no data</body></html>"
+        with patch("pipeline.fetcher.requests.post", side_effect=_rippling_search_mock(hits)), \
+             patch("pipeline.fetcher.requests.get", return_value=mock_resp):
+            result = rippling_fetcher.fetch(RIPPLING_PREFS)
+        assert len(result) == 1
+        assert result[0]["description"] == ""
+
+
+def _load_rippling_company_config():
+    with open(_COMPANIES_YAML_PATH) as f:
+        config = yaml.safe_load(f)
+    companies = config.get("companies", [])
+    return next((c for c in companies if c.get("ats") == "rippling"), None)
+
+
+class TestRipplingFetcherIntegration:
+    """Verify the full path: companies.yaml -> fetch_all_companies -> RipplingFetcher."""
+
+    def test_companies_yaml_has_rippling_entry(self):
+        rp = _load_rippling_company_config()
+        assert rp is not None, "companies.yaml must have an entry with ats: rippling"
+
+    def test_fetch_all_companies_returns_rippling_jobs(self):
+        rp = _load_rippling_company_config()
+        assert rp is not None
+        fake_job = {
+            "job_id": "job1",
+            "company": "Rippling",
+            "title": "Engineering Manager, Platform",
+            "location": "New York, NY",
+            "url": "https://ats.rippling.com/rippling/jobs/job1",
+            "apply_url": "https://ats.rippling.com/rippling/jobs/job1",
+            "description": "Own the platform roadmap.",
+        }
+
+        with patch("pipeline.fetcher.RipplingFetcher.fetch", return_value=[fake_job]):
+            jobs = fetch_all_companies([rp], PREFERENCES)
+
+        rp_jobs = [j for j in jobs if j["company"] == "Rippling"]
+        assert len(rp_jobs) == 1
+        assert rp_jobs[0]["job_id"] == "job1"
+
+
+# ── New York Times (Greenhouse) — config only ────────────────────────────────
+# NYT uses the standard Greenhouse board API (board_slug "thenewyorktimes"),
+# fully covered by GreenhouseFetcher — only a companies.yaml entry is needed.
+
+class TestNewYorkTimesConfig:
+    def test_companies_yaml_has_nyt_greenhouse_entry(self):
+        with open(_COMPANIES_YAML_PATH) as f:
+            config = yaml.safe_load(f)
+        companies = config.get("companies", [])
+        nyt = next((c for c in companies
+                    if c.get("ats") == "greenhouse" and c.get("board_slug") == "thenewyorktimes"), None)
+        assert nyt is not None, "companies.yaml must have a Greenhouse entry with board_slug 'thenewyorktimes'"
