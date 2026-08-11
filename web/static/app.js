@@ -592,6 +592,7 @@ const App = (() => {
     greenhouse: "GH", ashby: "AS", lever: "LV", google: "GO", apple: "AP",
     meta: "ME", microsoft: "MS", uber: "UB", walmart: "WM", netflix: "NF",
     zillow: "ZI", amazon: "AZ", linkedin: "LI", jsearch: "JS",
+    paypal: "PP", github: "HUB", rippling: "RP",
   };
 
   const _ATS_OPTIONS = [
@@ -601,6 +602,7 @@ const App = (() => {
     ["microsoft", "Microsoft (custom)"], ["uber", "Uber (custom)"],
     ["walmart", "Walmart (custom)"], ["netflix", "Netflix (custom)"],
     ["zillow", "Zillow (custom)"], ["amazon", "Amazon (custom)"], ["linkedin", "LinkedIn (custom)"],
+    ["paypal", "PayPal (custom)"], ["github", "GitHub (custom)"], ["rippling", "Rippling (custom)"],
   ];
 
   const _CHIP_FIELDS = [

@@ -1,5 +1,5 @@
 # Company configurations for job fetching
-# ats: greenhouse | ashby | netflix | zillow | amazon | jsearch | microsoft | uber | walmart | linkedin | capitalone
+# ats: greenhouse | ashby | netflix | zillow | amazon | jsearch | microsoft | uber | walmart | linkedin | capitalone | paypal | github | rippling
 
 companies:
 
@@ -166,3 +166,26 @@ companies:
       - "Director, Software Engineering"
       - "Engineering Manager"
       - "Senior Engineering Manager"
+
+  # ── PayPal (Workday) ──────────────────────────────────────────────────────────
+  - name: PayPal
+    ats: paypal
+    # PayPal uses "Manager, Software Engineering" naming instead of "Engineering Manager"
+    title_keywords:
+      - "Manager, Software Engineering"
+      - "Senior Manager, Software Engineering"
+      - "Director, Software Engineering"
+      - "Engineering Manager"
+
+  # ── GitHub (Jibe/iCIMS careers site) ────────────────────────────────────────
+  - name: GitHub
+    ats: github
+
+  # ── Rippling (own ATS product, dogfooded for their own hiring) ─────────────
+  - name: Rippling
+    ats: rippling
+
+  # ── New York Times (Greenhouse) ─────────────────────────────────────────────
+  - name: New York Times
+    ats: greenhouse
+    board_slug: thenewyorktimes

@@ -22,6 +22,9 @@ _KNOWN_CUSTOM: dict = {
     "zillow": "zillow",
     "amazon": "amazon",
     "linkedin": "linkedin",
+    "paypal": "paypal",
+    "github": "github",
+    "rippling": "rippling",
 }
 
 _TIMEOUT = 8
