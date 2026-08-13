@@ -17,19 +17,28 @@ rather than stall, and its own summary is threaded into the PR body so the
 reasoning is visible where a human can actually act on it.
 """
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.backlog_agent import (
+    build_judge_prompt,
     build_pr_body,
     build_prompt,
-    create_pr,
+    commit_and_push,
     make_worktree,
+    open_pr,
+    post_judge_comment,
+    python_for_tests,
     remove_worktree,
     run_agent,
+    run_judge,
+    run_secret_scan,
+    run_test_suite,
     sanitized_env,
+    stage_changes,
 )
 
 
@@ -193,19 +202,20 @@ class TestRunAgentIsolation:
         assert summary == "Chose option A because X."
 
 
-class TestCreatePrIsolation:
-    def test_git_commands_run_in_worktree_not_repo_root(self, tmp_path):
+class TestStageChanges:
+    def test_returns_true_when_something_staged(self, tmp_path):
         worktree = tmp_path / "some-worktree"
         worktree.mkdir()
 
-        ok = MagicMock(returncode=0)
-        with patch("agent.backlog_agent.subprocess.run", return_value=ok) as mock_run:
-            create_pr(SAMPLE_ISSUE, worktree, "agent/issue-10")
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["git", "diff", "--cached"]:
+                return MagicMock(returncode=1)  # something staged
+            return MagicMock(returncode=0)
 
-        cwds = {call.kwargs.get("cwd") for call in mock_run.call_args_list}
-        assert cwds == {worktree}
+        with patch("agent.backlog_agent.subprocess.run", side_effect=fake_run):
+            assert stage_changes(worktree) is True
 
-    def test_no_changes_skips_commit_and_push(self, tmp_path):
+    def test_returns_false_when_nothing_staged(self, tmp_path):
         worktree = tmp_path / "some-worktree"
         worktree.mkdir()
 
@@ -214,12 +224,222 @@ class TestCreatePrIsolation:
                 return MagicMock(returncode=0)  # nothing staged
             return MagicMock(returncode=0)
 
-        with patch("agent.backlog_agent.subprocess.run", side_effect=fake_run) as mock_run:
-            create_pr(SAMPLE_ISSUE, worktree, "agent/issue-10")
+        with patch("agent.backlog_agent.subprocess.run", side_effect=fake_run):
+            assert stage_changes(worktree) is False
 
+    def test_runs_in_worktree_not_repo_root(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+
+        ok = MagicMock(returncode=0)
+        with patch("agent.backlog_agent.subprocess.run", return_value=ok) as mock_run:
+            stage_changes(worktree)
+
+        cwds = {call.kwargs.get("cwd") for call in mock_run.call_args_list}
+        assert cwds == {worktree}
+
+
+class TestPythonForTests:
+    def test_prefers_repo_venv_when_present(self, tmp_path, monkeypatch):
+        import agent.backlog_agent as mod
+        monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+        venv_python = tmp_path / ".venv" / "bin" / "python3"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_text("#!/bin/sh\n")
+
+        assert python_for_tests() == str(venv_python)
+
+    def test_falls_back_to_running_interpreter_without_venv(self, tmp_path, monkeypatch):
+        import agent.backlog_agent as mod
+        monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+
+        assert python_for_tests() == sys.executable
+
+
+class TestRunTestSuite:
+    def test_passes_when_pytest_exits_zero(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+        ok = MagicMock(returncode=0, stdout="5 passed", stderr="")
+        with patch("agent.backlog_agent.subprocess.run", return_value=ok) as mock_run:
+            passed, output = run_test_suite(worktree)
+
+        assert passed is True
+        assert "5 passed" in output
+        assert mock_run.call_args.kwargs["cwd"] == worktree
+
+    def test_fails_when_pytest_exits_nonzero(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+        bad = MagicMock(returncode=1, stdout="1 failed", stderr="")
+        with patch("agent.backlog_agent.subprocess.run", return_value=bad):
+            passed, output = run_test_suite(worktree)
+
+        assert passed is False
+        assert "1 failed" in output
+
+
+class TestRunSecretScan:
+    def test_fails_closed_when_gitleaks_not_installed(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+        with patch("agent.backlog_agent.shutil.which", return_value=None):
+            clean, message = run_secret_scan(worktree)
+
+        assert clean is False
+        assert "gitleaks is not installed" in message
+
+    def test_clean_when_gitleaks_exits_zero(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+        ok = MagicMock(returncode=0, stdout="no leaks found", stderr="")
+        with patch("agent.backlog_agent.shutil.which", return_value="/usr/local/bin/gitleaks"), \
+             patch("agent.backlog_agent.subprocess.run", return_value=ok):
+            clean, _ = run_secret_scan(worktree)
+
+        assert clean is True
+
+    def test_dirty_when_gitleaks_finds_a_leak(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+        leak_found = MagicMock(returncode=1, stdout="", stderr="leak: github_pat_... found in fetcher.py")
+        with patch("agent.backlog_agent.shutil.which", return_value="/usr/local/bin/gitleaks"), \
+             patch("agent.backlog_agent.subprocess.run", return_value=leak_found):
+            clean, message = run_secret_scan(worktree)
+
+        assert clean is False
+        assert "github_pat" in message
+
+    def test_scans_staged_diff_in_worktree(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("agent.backlog_agent.shutil.which", return_value="/usr/local/bin/gitleaks"), \
+             patch("agent.backlog_agent.subprocess.run", return_value=ok) as mock_run:
+            run_secret_scan(worktree)
+
+        cmd = mock_run.call_args.args[0]
+        assert "--staged" in cmd
+        assert str(worktree) in cmd
+
+
+class TestCommitAndPush:
+    def test_runs_in_worktree_not_repo_root(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+        ok = MagicMock(returncode=0)
+        with patch("agent.backlog_agent.subprocess.run", return_value=ok) as mock_run:
+            commit_and_push(SAMPLE_ISSUE, worktree, "agent/issue-10")
+
+        cwds = {call.kwargs.get("cwd") for call in mock_run.call_args_list}
+        assert cwds == {worktree}
         commands = [call.args[0][:2] for call in mock_run.call_args_list]
-        assert ["git", "commit"] not in commands
-        assert ["git", "push"] not in commands
+        assert ["git", "commit"] in commands
+        assert ["git", "push"] in commands
+
+
+class TestOpenPr:
+    def test_returns_pr_url_from_gh_output(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+        ok = MagicMock(returncode=0, stdout="https://github.com/owner/repo/pull/99\n", stderr="")
+        with patch("agent.backlog_agent.subprocess.run", return_value=ok):
+            url = open_pr(SAMPLE_ISSUE, worktree, "summary text")
+
+        assert url == "https://github.com/owner/repo/pull/99"
+
+    def test_body_includes_summary(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+        ok = MagicMock(returncode=0, stdout="https://github.com/owner/repo/pull/99\n", stderr="")
+        with patch("agent.backlog_agent.subprocess.run", return_value=ok) as mock_run:
+            open_pr(SAMPLE_ISSUE, worktree, "Chose option A.")
+
+        body_index = mock_run.call_args.args[0].index("--body") + 1
+        assert "Chose option A." in mock_run.call_args.args[0][body_index]
+
+
+class TestJudgePrompt:
+    def test_includes_diff_and_issue(self):
+        prompt = build_judge_prompt(SAMPLE_ISSUE, "diff --git a/x b/x\n+foo")
+        assert SAMPLE_ISSUE["title"] in prompt
+        assert "diff --git a/x b/x" in prompt
+
+    def test_asks_for_a_verdict(self):
+        prompt = build_judge_prompt(SAMPLE_ISSUE, "some diff")
+        assert "verdict" in prompt.lower()
+
+    def test_frames_it_as_independent_review(self):
+        prompt = build_judge_prompt(SAMPLE_ISSUE, "some diff")
+        assert "no context from the implementing run" not in prompt  # that framing lives in the PR comment, not the prompt itself
+
+
+class TestRunJudge:
+    def test_reads_diff_and_returns_result_text(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "diff"]:
+                return MagicMock(returncode=0, stdout="diff --git a/x b/x", stderr="")
+            return MagicMock(returncode=0, stdout='{"result": "LOOKS GOOD"}', stderr="")
+
+        with patch("agent.backlog_agent.subprocess.run", side_effect=fake_run):
+            verdict = run_judge(SAMPLE_ISSUE, worktree)
+
+        assert verdict == "LOOKS GOOD"
+
+    def test_judge_subprocess_is_read_only(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["git", "diff"]:
+                return MagicMock(returncode=0, stdout="diff", stderr="")
+            return MagicMock(returncode=0, stdout='{"result": "ok"}', stderr="")
+
+        with patch("agent.backlog_agent.subprocess.run", side_effect=fake_run):
+            run_judge(SAMPLE_ISSUE, worktree)
+
+        claude_call = next(c for c in calls if c[0] == "claude")
+        tools_index = claude_call.index("--allowedTools") + 1
+        allowed = claude_call[tools_index]
+        assert "Edit" not in allowed
+        assert "Write" not in allowed
+        assert "Bash" not in allowed
+
+    def test_judge_gets_sanitized_env(self, tmp_path, monkeypatch):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+        monkeypatch.setenv("GH_FEEDBACK_TOKEN", "should_not_leak")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            if cmd[:2] == ["git", "diff"]:
+                return MagicMock(returncode=0, stdout="diff", stderr="")
+            return MagicMock(returncode=0, stdout='{"result": "ok"}', stderr="")
+
+        with patch("agent.backlog_agent.subprocess.run", side_effect=fake_run):
+            run_judge(SAMPLE_ISSUE, worktree)
+
+        claude_call = next(cmd_kwargs for cmd_kwargs in calls if cmd_kwargs[0][0] == "claude")
+        assert "GH_FEEDBACK_TOKEN" not in claude_call[1]["env"]
+
+
+class TestPostJudgeComment:
+    def test_posts_via_gh_pr_comment(self, tmp_path):
+        worktree = tmp_path / "some-worktree"
+        worktree.mkdir()
+        ok = MagicMock(returncode=0)
+        with patch("agent.backlog_agent.subprocess.run", return_value=ok) as mock_run:
+            post_judge_comment(worktree, "agent/issue-10", "LOOKS GOOD")
+
+        cmd = mock_run.call_args.args[0]
+        assert cmd[:3] == ["gh", "pr", "comment"]
+        assert "LOOKS GOOD" in cmd[cmd.index("--body") + 1]
 
 
 class TestPromptForbidsStalling:
