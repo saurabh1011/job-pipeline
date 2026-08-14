@@ -36,6 +36,10 @@ venv/
 *.key
 config/preferences.yaml
 
+# Live per-user app data, editable from the UI — not code. Seeded from
+# config/companies.yaml.example on first run (see web/server.py).
+config/companies.yaml
+
 # macOS
 .DS_Store
 
