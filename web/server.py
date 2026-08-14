@@ -50,16 +50,29 @@ os.makedirs(PROFILE_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Sync versioned config files from the image into the volume on every startup.
-# The volume owns jobs.db/output/profile (mutable state); config files are
-# versioned in the image and must stay current after deploys.
+def seed_config_dir(image_config_dir: Path, dest_config_dir: str) -> None:
+    """Bootstrap dest_config_dir (a volume) from image_config_dir on startup.
+
+    companies.yaml is live per-user data edited from the UI, so only
+    companies.yaml.example is versioned in the image; seed the real file
+    from it once, then never touch it again on later startups. preferences.yaml
+    is fully versioned in the image, so re-sync it on every startup to pick
+    up deploys.
+    """
+    companies_dst = Path(dest_config_dir) / "companies.yaml"
+    if not companies_dst.exists():
+        companies_example = image_config_dir / "companies.yaml.example"
+        if companies_example.exists():
+            shutil.copy2(str(companies_example), str(companies_dst))
+
+    pref_src = image_config_dir / "preferences.yaml"
+    pref_dst = Path(dest_config_dir) / "preferences.yaml"
+    if pref_src.exists() and pref_src != pref_dst:
+        shutil.copy2(str(pref_src), str(pref_dst))
+
+
 _IMAGE_CONFIG = ROOT / "config"
-for _cfg_file in ["companies.yaml", "preferences.yaml"]:
-    _src = _IMAGE_CONFIG / _cfg_file
-    _dst = Path(CONFIG_DIR) / _cfg_file
-    if _src.exists() and _src != _dst:
-        import shutil as _shutil
-        _shutil.copy2(str(_src), str(_dst))
+seed_config_dir(_IMAGE_CONFIG, CONFIG_DIR)
 
 GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
